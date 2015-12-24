@@ -1,0 +1,1 @@
+All the SVG graphs must be here

@@ -1,0 +1,1 @@
+The SVG of the fetched repos must be here
