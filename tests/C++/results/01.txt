@@ -1,0 +1,16 @@
+{ 
+"cout" : 1, 
+"endl" : 1, 
+"hello" : 1,
+"include" : 1,
+"int" : 1,
+"iostream" : 1,
+"main" : 1,
+"namespace" : 1,
+"return" : 1,
+"std" : 1,
+"using" : 1,
+"world" : 1,
+"marks" : 16
+}
+
