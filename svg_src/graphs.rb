@@ -33,7 +33,7 @@ def svg_gen(filename)
 				height = (max - min) * v
 
 				f.write(make_square(c * (width + offset), offset + maxWidth - height, width, height))
-				f.write ('<text x="' + (c * (width + offset)).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + word + '</text>')
+				f.write('<text x="' + (c * (width + offset)).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + word + '</text>')
 				c = c + 1
 			else 
 				count.each do |word2, count2|
@@ -45,7 +45,7 @@ def svg_gen(filename)
 					height = (max - min) * v
 
 					f.write(make_square(c * (width + offset), offset + maxWidth - height, width, height))
-					f.write ('<text x="' + (c * (width + offset)).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + word2 + '</text>')
+					f.write('<text x="' + (c * (width + offset)).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + word2 + '</text>')
 					c = c + 1
 				end
 			end
@@ -55,6 +55,6 @@ def svg_gen(filename)
 	end
 end
 
-svg_gen(ARGV[0].to_s)
-svg_gen(ARGV[1].to_s)
-svg_gen(ARGV[2].to_s)
+svg_gen(ARGV[0])
+svg_gen(ARGV[1])
+svg_gen(ARGV[2])
