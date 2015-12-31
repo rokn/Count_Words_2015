@@ -1,9 +1,6 @@
-#include <iostream>
-
-using namespace std;
-
-int main() {
-	int a = 5;
-	int A = 4;
+int main(){
+	int i = 0;
+	i = 2;
+	i = 0;
 	return 0;
 }
