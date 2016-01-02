@@ -1,10 +1,8 @@
-
-
-int Sum(int param1, int param2){
-	return param1 + param2;
+int getSum(int num1, int num2){
+	return num1 + num2;
 }
 
 int main(){
-	int res = Sum(5, 4);
+	int sum = getSum(5, 4);
 	return 0;
 }

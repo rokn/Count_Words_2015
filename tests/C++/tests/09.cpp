@@ -1,19 +1,9 @@
-int main ()
-{
-   char grade = 'D';
-
-   switch(grade)
-   {
-   case 'A' :
-      cout << "Excellent!" << endl; 
-      break;
-   case 'B' :
-   case 'C' :
-      cout << "Well done" << endl;
-      break;
-   default :
-      cout << "Invalid grade" << endl;
-   }
- 
-   return 0;
+int main(){
+	for(int i=0; i<10; i++){
+		int foo = 0;
+		while(foo<5){
+			foo++;
+		}
+		--foo;
+	}
 }

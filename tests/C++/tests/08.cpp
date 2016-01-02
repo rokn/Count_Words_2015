@@ -1,11 +1,8 @@
-int main ()
-{
-  int n = 10;
-
-  while (n>0) {
-    cout << n << ", ";
-    --n;
-  }
-
-  cout << "liftoff!\n";
+int main(){
+	bool a = true;
+	bool b = false;
+	if(a||b){
+		int foo = 0;
+	}
+	return 0;
 }

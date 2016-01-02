@@ -1,4 +1,9 @@
+struct player{
+ 	int  age;
+};
+
 int main(){
-	String name_1 = "Ivan";
-	String name_2 = "iVan";
+	player p1;
+	p1.age = 20;
+	return 0;
 }
