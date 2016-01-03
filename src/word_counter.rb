@@ -22,14 +22,12 @@ class WordCounter
 		words.sort_by { |word, times| [-times, word] }
 	end
 
-	def self.count_words text, ext, words
+	def self.count_words text, type, words
 		strings = Array.new
-		if ext == 'cpp' || ext == 'cc' || ext == 'c'
+		if type == 'c'
 			remove_comments_c text
 			strings = get_strings_c text
 			parse_c text
-		else
-			parse_text text
 		end
 	  	text.downcase!
 		text.split(' ').each do |word|
