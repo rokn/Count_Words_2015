@@ -1,8 +1,5 @@
 class WordCounter
 	private
-	def self.sort_words words
-		words.sort_by { |word, times| [-times, word] }
-	end
 	def self.parse_text text
 		text.gsub!(/[^a-zA-Z0-9]/,' ')
 	end
@@ -18,9 +15,13 @@ class WordCounter
 	end
 
 	public
-	def self.count_words text, ext
+
+	def self.sort_words words
+		words.sort_by { |word, times| [-times, word] }
+	end
+
+	def self.count_words text, ext, words
 		strings = Array.new
-		words = Hash.new
 		if ext == 'cpp' || ext == 'cc' || ext == 'c'
 			strings = get_strings_c text
 			parse_c text
@@ -36,6 +37,5 @@ class WordCounter
 		  	words[word] = 0 if words[word]==nil
 		    words[word] += 1
 		end
-		sort_words words
 	end
 end
