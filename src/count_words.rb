@@ -40,11 +40,13 @@ else
 		  puts "#{word} #{times}"
 		end
 	else
-		File.open(output_filename,'w') do |file|
+	  File.open(output_filename,'w') do |file|
+            file << "{\n"
 			sorted_words.each do |word, times|
-			  file << "#{word} #{times}\n"
+			  file << "\"#{word}\" : \"#{times}\",\n"
 			end
-		end
+            file << "}\n"
+          end
 	end
 
 end
