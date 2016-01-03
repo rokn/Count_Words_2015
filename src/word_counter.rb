@@ -4,13 +4,15 @@ class WordCounter
 		text.gsub!(/[^a-zA-Z0-9]/,' ')
 	end
 
+	def self.remove_comments_c text
+		text.gsub!(/(\/\/.*\n)|(\/\*([\s\S]*?)\*\/)/, ' ')
+	end
 	def self.get_strings_c text
 		strings = text.scan(/".*?"/)
 		text.gsub!(/".*?"/,' ')
 		strings
 	end
 	def self.parse_c text
-		#Still doesn't parse strings right
 		text.gsub!(/[-+=*\/;<>\(\){}&|,:\?\"\'\[\]\!]/,' ').gsub!(/\s[0-9][^\s]*/,'').gsub!(/\./,' ')
 	end
 
@@ -23,6 +25,7 @@ class WordCounter
 	def self.count_words text, ext, words
 		strings = Array.new
 		if ext == 'cpp' || ext == 'cc' || ext == 'c'
+			remove_comments_c text
 			strings = get_strings_c text
 			parse_c text
 		else
