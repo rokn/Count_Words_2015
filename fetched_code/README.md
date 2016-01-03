@@ -1,1 +1,1 @@
-The SVG of the fetched repos must be here
+The CSV of the fetched repos must be here

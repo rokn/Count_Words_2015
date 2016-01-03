@@ -1,0 +1,7 @@
+
+class myabstractclass{
+
+}
+class myabstractclaSS{
+
+}

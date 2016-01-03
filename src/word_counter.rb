@@ -1,31 +1,33 @@
 class WordCounter
 	private
-	def self.sort_words words
-		words.sort_by { |word, times| [-times, word] }
-	end
 	def self.parse_text text
 		text.gsub!(/[^a-zA-Z0-9]/,' ')
 	end
 
+	def self.remove_comments_c text
+		text.gsub!(/(\/\/.*\n)|(\/\*([\s\S]*?)\*\/)/, ' ')
+	end
 	def self.get_strings_c text
 		strings = text.scan(/".*?"/)
 		text.gsub!(/".*?"/,' ')
 		strings
 	end
 	def self.parse_c text
-		#Still doesn't parse strings right
 		text.gsub!(/[-+=*\/;<>\(\){}&|,:\?\"\'\[\]\!]/,' ').gsub!(/\s[0-9][^\s]*/,'').gsub!(/\./,' ')
 	end
 
 	public
-	def self.count_words text, ext
+
+	def self.sort_words words
+		words.sort_by { |word, times| [-times, word] }
+	end
+
+	def self.count_words text, type, words
 		strings = Array.new
-		words = Hash.new
-		if ext == 'cpp' || ext == 'cc' || ext == 'c'
+		if type == 'c'
+			remove_comments_c text
 			strings = get_strings_c text
 			parse_c text
-		else
-			parse_text text
 		end
 	  	text.downcase!
 		text.split(' ').each do |word|
@@ -36,6 +38,5 @@ class WordCounter
 		  	words[word] = 0 if words[word]==nil
 		    words[word] += 1
 		end
-		sort_words words
 	end
 end

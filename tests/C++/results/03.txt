@@ -1,0 +1,9 @@
+{
+	"foo_1": 2,
+	"int": 2,
+	"void": 2,
+	"main": 1,
+	"num_1": 1,
+	"return": 1,
+	"marks": 14
+}
