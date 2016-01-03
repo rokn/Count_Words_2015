@@ -1,0 +1,8 @@
+{
+	"class": 2,
+	"test": 2,
+	"int": 1,
+	"main": 1,
+	"return": 1,
+	"marks": 11
+}

@@ -1,0 +1,13 @@
+{
+	"a": 2,
+	"b": 2,
+	"bool": 2,
+	"int": 2,
+	"false": 1,
+	"foo": 1,
+	"if": 1,
+	"main": 1,
+	"return": 1, 
+	"true": 1,
+	"marks": 17
+}

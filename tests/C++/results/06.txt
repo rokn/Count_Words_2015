@@ -1,0 +1,11 @@
+{
+	"int": 2,
+	"player": 2,
+	"age": 1,
+	"main": 1,
+	"p1": 1,
+	"p1age": 1,
+	"return": 1,
+	"struct": 1,
+	"marks": 13
+}

@@ -1,0 +1,9 @@
+{
+	"char": 1,
+	"db_name": 1,
+	"int": 1,
+	"main": 1,
+	"return": 1,
+	"test_db": 1,
+	"marks": 11
+}

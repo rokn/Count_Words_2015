@@ -1,0 +1,18 @@
+{
+	"grade_f": 4,
+	"case": 3, 
+	"a": 2, 
+	"b": 2,
+	"break": 2,
+	"char": 2,
+	"grade": 2,
+	"c": 1,
+	"d": 1,
+	"default": 1,
+	"i": 1,
+	"int": 1,
+	"main": 1,
+	"return": 1,
+	"switch": 1,
+	"marks": 39
+}

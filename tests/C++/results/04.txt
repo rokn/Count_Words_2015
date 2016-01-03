@@ -1,0 +1,10 @@
+{
+	"int": 5,
+	"getsum": 2,
+	"num1": 2,
+	"num2": 2,
+	"return": 2,
+	"main": 1,
+	"sum": 1,
+	"marks": 19
+}
