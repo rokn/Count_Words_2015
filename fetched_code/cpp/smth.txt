@@ -1,24 +1,23 @@
 http://sourceforge.net/projects/boost/files/boost/1.60.0/ 
-- 173k lines in hpp files(C++ classes)
-- 207k lines in cpp files(actuall c++ code)
-- 70k lines in c files(c code for acompany)
+- 228k lines in hpp files(C++ classes) 
+- 223k lines in cpp files(actuall c++ code) 
+- 69k lines in c files(c code for acompany)
 http://sourceforge.net/projects/fastformat/
-- 44k lines in hpp files
-- 45k lines in cpp files
+- 41k lines in hpp files
+- 44k lines in cpp files
 http://sourceforge.net/projects/loki-lib/files/latest/download
--18k lines in cpp files
--0.7k lines in hpp files
+-17k lines in cpp files
+-1k lines in hpp files
 http://sourceforge.net/projects/pantheios/files/latest/download?source=files
--57k lines in cpp files
+-56k lines in cpp files
 -34k lines in hpp files
 -14k lines in c files
 http://pocoproject.org/download/index.html
 -55k lines in c files
 -154k lines in cpp files
--0.2k lines in hpp files
 http://sourceforge.net/projects/stlsoft/files/latest/download
- -224k lines in hpp files
+ -224k lines in hpp file
 
 
 Total:
-1,1m lines
+1.2m lines
