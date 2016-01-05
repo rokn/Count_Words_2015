@@ -34,8 +34,8 @@ else
 		ext = get_file_extension filename
 		
 		type = String.new
-		type = 'c' if ext=='cpp' || ext=='cc' 
-		type = 'ruby' if ext=='rb'
+		type = 'c' if( ext=='cpp' || ext=='cc' || ext=='h' || ext=='hpp' )
+		type = 'ruby' if( ext=='rb' )
 
 		if type == target_language
 			file = File.open(filename,"r")
