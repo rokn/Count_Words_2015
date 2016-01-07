@@ -86,7 +86,7 @@
 
     #if defined EXAMPLE_3
         //! Doesn't compile in C++03.
-        //! error: variable �boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)> example� has initializer but incomplete type
+        //! error: variable âboost::packaged_task<std::basic_string<char>(std::basic_string<char>&)> exampleâ has initializer but incomplete type
 
         {
             boost::packaged_task<std::string(std::string&)> example(string_with_params);
@@ -134,9 +134,9 @@
 
     #if defined EXAMPLE_6
         //! Doesn't compile in C++03, C++11 only.
-        // packagedTestTest.cpp:94:43: error: invalid use of incomplete type ‘class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>’
-        // packagedTestTest.cpp:95:37: error: incomplete type ‘task_t {aka boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>}’ used in nested name specifier
-        // boost/thread/future.hpp:1320:11: error: declaration of ‘class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>’
+        // packagedTestTest.cpp:94:43: error: invalid use of incomplete type â€˜class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>â€™
+        // packagedTestTest.cpp:95:37: error: incomplete type â€˜task_t {aka boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>}â€™ used in nested name specifier
+        // boost/thread/future.hpp:1320:11: error: declaration of â€˜class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>â€™
         {
           //typedef boost::packaged_task<std::string(std::string&)> task_t;
           typedef boost::packaged_task<std::string()> task_t;
@@ -151,9 +151,9 @@
 
     #if defined EXAMPLE_7
         //! Doesn't compile in C++03, C++11 only.
-        // packagedTestTest.cpp:94:43: error: invalid use of incomplete type ‘class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>’
-        // packagedTestTest.cpp:95:37: error: incomplete type ‘task_t {aka boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>}’ used in nested name specifier
-        // boost/thread/future.hpp:1320:11: error: declaration of ‘class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>’
+        // packagedTestTest.cpp:94:43: error: invalid use of incomplete type â€˜class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>â€™
+        // packagedTestTest.cpp:95:37: error: incomplete type â€˜task_t {aka boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>}â€™ used in nested name specifier
+        // boost/thread/future.hpp:1320:11: error: declaration of â€˜class boost::packaged_task<std::basic_string<char>(std::basic_string<char>&)>â€™
         {
             boost::asio::io_service io_service;
             boost::thread_group threads;

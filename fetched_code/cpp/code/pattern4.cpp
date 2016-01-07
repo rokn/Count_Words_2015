@@ -125,27 +125,27 @@ int main()
         typedef boost::spirit::char_encoding::iso8859_1 iso8859_1;
         karma::rule<outiter_type, iso8859_1> r;
 
-        r = lower['·'];
-        BOOST_TEST(test("·", r));
-        r = lower[char_('¡')];
-        BOOST_TEST(test("·", r));
-        r = upper['·'];
-        BOOST_TEST(test("¡", r));
-        r = upper[char_('¡')];
-        BOOST_TEST(test("¡", r));
+        r = lower['√°'];
+        BOOST_TEST(test("√°", r));
+        r = lower[char_('√Å')];
+        BOOST_TEST(test("√°", r));
+        r = upper['√°'];
+        BOOST_TEST(test("√Å", r));
+        r = upper[char_('√Å')];
+        BOOST_TEST(test("√Å", r));
 
-        r = lower["·¡"];
-        BOOST_TEST(test("··", r));
-        r = lower[lit("·¡")];
-        BOOST_TEST(test("··", r));
-        r = lower[string("·¡")];
-        BOOST_TEST(test("··", r));
-        r = upper["·¡"];
-        BOOST_TEST(test("¡¡", r));
-        r = upper[lit("·¡")];
-        BOOST_TEST(test("¡¡", r));
-        r = upper[string("·¡")];
-        BOOST_TEST(test("¡¡", r));
+        r = lower["√°√Å"];
+        BOOST_TEST(test("√°√°", r));
+        r = lower[lit("√°√Å")];
+        BOOST_TEST(test("√°√°", r));
+        r = lower[string("√°√Å")];
+        BOOST_TEST(test("√°√°", r));
+        r = upper["√°√Å"];
+        BOOST_TEST(test("√Å√Å", r));
+        r = upper[lit("√°√Å")];
+        BOOST_TEST(test("√Å√Å", r));
+        r = upper[string("√°√Å")];
+        BOOST_TEST(test("√Å√Å", r));
     }
 
 #if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))

@@ -6,7 +6,8 @@ def get_file_extension filename
 end
 
 def valid_language? str
-	str=='c' || str=='java' || str=='ruby'
+	s = str.downcase
+	s=='c' || s=='java' || s=='ruby'
 end
 
 
@@ -29,8 +30,9 @@ else
 
 	counted_words = Hash.new
 
+	file_no = 0
 	files.each do |filename|
-		puts "#{filename}" if output_filename != nil
+		file_no += 1
 		ext = get_file_extension filename
 		
 		type = String.new
@@ -38,9 +40,11 @@ else
 		type = 'ruby' if( ext=='rb' )
 
 		if type == target_language
+			print "#{file_no}: #{filename} : " if output_filename != nil
 			file = File.open(filename,"r")
 			text = String.new
 			file.each { |line| text << line }
+			puts text.encoding if output_filename != nil
 			
 			WordCounter.count_words text, type, counted_words
 		end

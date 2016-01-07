@@ -17,7 +17,7 @@ int main( int argc, char** argv )
     namespace karma = boost::spirit::karma;
     std::string output;
     std::back_insert_iterator< std::string > sink = std::back_inserter( output );
-    karma::generate( sink, karma::double_, 0 ); // prints ¨inf¨ instead of ¨0.0¨
+    karma::generate( sink, karma::double_, 0 ); // prints Â¨infÂ¨ instead of Â¨0.0Â¨
     BOOST_TEST((output == "0.0"));
     return boost::report_errors();
 }

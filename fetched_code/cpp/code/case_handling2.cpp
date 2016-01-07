@@ -102,11 +102,11 @@ main()
     {
         using namespace boost::spirit::iso8859_1;
 
-        BOOST_TEST(test("ää", lower["Ää"]));
-        BOOST_TEST(test("ää", lower["Ää"]));
+        BOOST_TEST(test("Ã¤Ã¤", lower["Ã„Ã¤"]));
+        BOOST_TEST(test("Ã¤Ã¤", lower["Ã„Ã¤"]));
 
-        BOOST_TEST(test("ÄÄ", upper["Ää"]));
-        BOOST_TEST(test("ÄÄ", upper["Ää"]));
+        BOOST_TEST(test("Ã„Ã„", upper["Ã„Ã¤"]));
+        BOOST_TEST(test("Ã„Ã„", upper["Ã„Ã¤"]));
     }
 #if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
 #pragma setlocale("")

@@ -8,7 +8,7 @@
  * Created:     15th January 2002
  * Updated:     26th August 2015
  *
- * Thanks:      To Cl·udio Albuquerque for suggesting the inclusion of
+ * Thanks:      To Cl√°udio Albuquerque for suggesting the inclusion of
  *              atlstr.h.
  *
  * Home:        http://stlsoft.org/

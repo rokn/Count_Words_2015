@@ -1,19 +1,15 @@
 class WordCounter
 	private
-	def self.parse_text text
-		text.gsub!(/[^a-zA-Z0-9]/,' ')
-	end
-
 	def self.remove_comments_c text
 		text.gsub!(/(\/\/.*\n)|(\/\*([\s\S]*?)\*\/)/, ' ')
-	end
+		end
 	def self.get_strings_c text
 		strings = text.scan(/".*?"/)
 		text.gsub!(/".*?"/,' ')
 		strings
 	end
 	def self.parse_c text
-		text.gsub!(/[-+=*\/;<>\(\){}&|,:\?\"\'\[\]\!]/,' ').gsub!(/\s[0-9][^\s]*/,'').gsub!(/\./,' ')
+		text = text.gsub(/[\-\+\=\*\/\;\<\>\(\)\{\}\&\|\,\#\:\?\"\'\[\]\!]/,' ').gsub(/\s[0-9][^\s]*/,'').gsub(/\./,' ')
 	end
 
 	public
@@ -27,7 +23,10 @@ class WordCounter
 		if type == 'c'
 			remove_comments_c text
 			strings = get_strings_c text
-			parse_c text
+			text = parse_c text
+		else
+			puts "Error: unsupported type"
+			exit
 		end
 	  	text.downcase!
 		text.split(' ').each do |word|

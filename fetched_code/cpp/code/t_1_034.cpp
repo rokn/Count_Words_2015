@@ -26,13 +26,13 @@ STR()         //R ""
 //H 08: t_1_034.cpp(15): MACRO2(...)=__VA_ARGS__
 //H 10: t_1_034.cpp(16): #define
 //H 08: t_1_034.cpp(16): STR(...)=#__VA_ARGS__
-//H 00: t_1_034.cpp(19): MACRO1(1,ง), [t_1_034.cpp(14): MACRO1(x, ...)=x -> __VA_ARGS__]
+//H 00: t_1_034.cpp(19): MACRO1(1,ยง), [t_1_034.cpp(14): MACRO1(x, ...)=x -> __VA_ARGS__]
 //H 02: 1 -> 
 //H 03: 1 ->
 //H 00: t_1_034.cpp(20): MACRO2(1, 2), [t_1_034.cpp(15): MACRO2(...)=__VA_ARGS__]
 //H 02: 1, 2
 //H 03: 1, 2
-//H 00: t_1_034.cpp(21): STR(ง), [t_1_034.cpp(16): STR(...)=#__VA_ARGS__]
+//H 00: t_1_034.cpp(21): STR(ยง), [t_1_034.cpp(16): STR(...)=#__VA_ARGS__]
 //H 02: ""
 //H 03: ""
 

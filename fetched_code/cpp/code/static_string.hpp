@@ -6,7 +6,7 @@
  * Created:     11th June 1994
  * Updated:     4th November 2015
  *
- * Thanks:      To Cl·udio Albuquerque for supplying the pop_back() member.
+ * Thanks:      To Cl√°udio Albuquerque for supplying the pop_back() member.
  *
  * Home:        http://stlsoft.org/
  *

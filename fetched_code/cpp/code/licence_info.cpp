@@ -713,7 +713,7 @@ std::string format_authors_name(const std::string& name)
    // put name into a consistent format, so that we don't get too much
    // of a proliferation of names (lots of versions of the same basic form).
 
-   static const boost::regex e("(^)?[^-(<a-zA-ZÀ-þ]+(([(<].*)?$)?");
+   static const boost::regex e("(^)?[^-(<a-zA-ZÃ€-Ã¾]+(([(<].*)?$)?");
    static const char* formatter = "(?1:(?2: ))";
 
    return boost::regex_replace(name, e, formatter, boost::match_default | boost::format_all);

@@ -58,7 +58,7 @@ main()
 #endif
     {
         using namespace boost::spirit::iso8859_1;
-        BOOST_TEST(test("¡", no_case[char_('·')]));
+        BOOST_TEST(test("√Å", no_case[char_('√°')]));
     }
 
     {
@@ -66,8 +66,8 @@ main()
         BOOST_TEST(test("X", no_case[char_("a-z")]));
         BOOST_TEST(!test("1", no_case[char_("a-z")]));
 
-        BOOST_TEST(test("…", no_case[char_("Â-Ô")]));
-        BOOST_TEST(!test("ˇ", no_case[char_("Â-Ô")]));
+        BOOST_TEST(test("√â", no_case[char_("√•-√Ø")]));
+        BOOST_TEST(!test("√ø", no_case[char_("√•-√Ø")]));
     }
 #if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
 #pragma setlocale("")
@@ -85,8 +85,8 @@ main()
 #endif
     {
         using namespace boost::spirit::iso8859_1;
-        BOOST_TEST(test("¡·", no_case[lit("·¡")]));
-        BOOST_TEST(test("··", no_case[no_case[lit("·¡")]]));
+        BOOST_TEST(test("√Å√°", no_case[lit("√°√Å")]));
+        BOOST_TEST(test("√°√°", no_case[no_case[lit("√°√Å")]]));
     }
 #if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
 #pragma setlocale("")

@@ -1,6 +1,6 @@
 ////////////////////////////////////////////////////////////////////////////////
 // The Loki Library
-// Copyright (c) 2005 Peter Kümmel
+// Copyright (c) 2005 Peter KÃ¼mmel
 // Copyright (c) 2005 Richard Sposato
 // Permission to use, copy, modify, distribute and sell this software for any 
 //     purpose is hereby granted without fee, provided that the above copyright 

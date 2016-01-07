@@ -27,22 +27,22 @@ PASTE2(1, , , 4)  //R 14
 //H 08: t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d
 //H 10: t_1_035.cpp(15): #define
 //H 08: t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d
-//H 00: t_1_035.cpp(18): PASTE1(1, ง,3,4), [t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d]
+//H 00: t_1_035.cpp(18): PASTE1(1, ยง,3,4), [t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d]
 //H 02: 134
 //H 03: 134
-//H 00: t_1_035.cpp(19): PASTE1(1,ง,3,4), [t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d]
+//H 00: t_1_035.cpp(19): PASTE1(1,ยง,3,4), [t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d]
 //H 02: 134
 //H 03: 134
-//H 00: t_1_035.cpp(20): PASTE1(1, ง, ง, 4), [t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d]
+//H 00: t_1_035.cpp(20): PASTE1(1, ยง, ยง, 4), [t_1_035.cpp(14): PASTE1(a, b, c, d)=a ## b ## c ## d]
 //H 02: 14
 //H 03: 14
-//H 00: t_1_035.cpp(22): PASTE2(1, ง,3,4), [t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d]
+//H 00: t_1_035.cpp(22): PASTE2(1, ยง,3,4), [t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d]
 //H 02: 134
 //H 03: 134
-//H 00: t_1_035.cpp(23): PASTE2(1,ง,3,4), [t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d]
+//H 00: t_1_035.cpp(23): PASTE2(1,ยง,3,4), [t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d]
 //H 02: 134
 //H 03: 134
-//H 00: t_1_035.cpp(24): PASTE2(1, ง, ง, 4), [t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d]
+//H 00: t_1_035.cpp(24): PASTE2(1, ยง, ยง, 4), [t_1_035.cpp(15): PASTE2(a, b, c, d)=a##b##c##d]
 //H 02: 14
 //H 03: 14
 

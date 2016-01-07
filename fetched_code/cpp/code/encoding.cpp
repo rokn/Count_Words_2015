@@ -39,18 +39,18 @@ main()
 #endif
 
     {
-        BOOST_TEST(test("¡", iso8859_1[no_case['·']]));
-        BOOST_TEST(test("¡", iso8859_1[no_case[char_('·')]]));
+        BOOST_TEST(test("√Å", iso8859_1[no_case['√°']]));
+        BOOST_TEST(test("√Å", iso8859_1[no_case[char_('√°')]]));
     }
 
     {
-        BOOST_TEST(test("…", iso8859_1[no_case[char_("Â-Ô")]]));
-        BOOST_TEST(!test("ˇ", iso8859_1[no_case[char_("Â-Ô")]]));
+        BOOST_TEST(test("√â", iso8859_1[no_case[char_("√•-√Ø")]]));
+        BOOST_TEST(!test("√ø", iso8859_1[no_case[char_("√•-√Ø")]]));
     }
 
     {
-        BOOST_TEST(test("¡·", iso8859_1[no_case["·¡"]]));
-        BOOST_TEST(test("¡·", iso8859_1[no_case[lit("·¡")]]));
+        BOOST_TEST(test("√Å√°", iso8859_1[no_case["√°√Å"]]));
+        BOOST_TEST(test("√Å√°", iso8859_1[no_case[lit("√°√Å")]]));
     }
 
 

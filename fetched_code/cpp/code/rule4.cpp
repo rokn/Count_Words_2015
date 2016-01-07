@@ -115,19 +115,19 @@ main()
         typedef boost::spirit::char_encoding::iso8859_1 iso8859_1;
         rule<char const*, iso8859_1> r;
 
-        r = no_case['·'];
-        BOOST_TEST(test("¡", r));
-        r = no_case[char_('·')];
-        BOOST_TEST(test("¡", r));
+        r = no_case['√°'];
+        BOOST_TEST(test("√Å", r));
+        r = no_case[char_('√°')];
+        BOOST_TEST(test("√Å", r));
 
-        r = no_case[char_("Â-Ô")];
-        BOOST_TEST(test("…", r));
-        BOOST_TEST(!test("ˇ", r));
+        r = no_case[char_("√•-√Ø")];
+        BOOST_TEST(test("√â", r));
+        BOOST_TEST(!test("√ø", r));
 
-        r = no_case["·¡"];
-        BOOST_TEST(test("¡·", r));
-        r = no_case[lit("·¡")];
-        BOOST_TEST(test("¡·", r));
+        r = no_case["√°√Å"];
+        BOOST_TEST(test("√Å√°", r));
+        r = no_case[lit("√°√Å")];
+        BOOST_TEST(test("√Å√°", r));
     }
 
 #if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))

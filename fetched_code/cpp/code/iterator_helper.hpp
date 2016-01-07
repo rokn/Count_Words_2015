@@ -7,7 +7,7 @@
  * Created:     2nd January 2000
  * Updated:     21st September 2015
  *
- * Thanks:      To Cl·udio Albuquerque for assisting with VC++ 12 & 14
+ * Thanks:      To Cl√°udio Albuquerque for assisting with VC++ 12 & 14
  *              support.
  *
  * Home:        http://stlsoft.org/

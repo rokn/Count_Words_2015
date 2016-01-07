@@ -126,7 +126,7 @@ int main()
   }
 #endif
 #if ! defined(BOOST_NO_CXX11_VARIADIC_TEMPLATES)
-// sync/futures/make_ready_future_pass.cpp:125:65: erreur: conversion from Ôboost::future<boost::rv<movable2> >Õ to non-scalar type Ôboost::future<movable2>Õ requested
+// sync/futures/make_ready_future_pass.cpp:125:65: erreur: conversion from Ã”boost::future<boost::rv<movable2> >Ã• to non-scalar type Ã”boost::future<movable2>Ã• requested
   {
     typedef movable2 T;
     T i;
