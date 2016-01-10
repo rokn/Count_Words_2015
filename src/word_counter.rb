@@ -35,11 +35,11 @@ class WordCounter
 		strings
 	end
 	def self.parse_c text
-		text = text.gsub(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}']/,' ').gsub(/\s[0-9][^\s]*/,'').gsub(/\./,' ')
+		text = text.gsub(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}(\\\s)]/,' ').gsub(/\s[0-9][^\s]*/,'').gsub(/\./,' ')
 	end
 
 	def self.get_marks text
-		text.scan(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}\.]/).size
+		text.scan(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}\\\.]/).size
 	end
 
 	public
@@ -62,10 +62,6 @@ class WordCounter
 		end
 	  	text.downcase!
 		text.split(' ').each do |word|
-			if( word == "y\"" )
-				puts "bang"
-				exit
-			end
 		  	words[word] = 0 if words[word]==nil
 		    words[word] += 1
 		end
