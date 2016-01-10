@@ -1,7 +1,7 @@
 require 'json'
 
 def make_square(x, y, w, h)
-	'<rect width="' + w.to_s + '" height="' + h.to_s + '" x = "' + x.to_s + '" y = "' + y.to_s+ '" style="fill:darkolivegreen;stroke-width:3;stroke:rgb(0,0,0)"/>'
+	'<rect width="' + w.to_s + '" height="' + h.to_s + '" x = "' + x.to_s + '" y = "' + y.to_s+ '" style="fill:darkolivegreen;stroke-width:3;stroke:darkolivegreen"/>'
 end
 
 def largest_value(hash)
