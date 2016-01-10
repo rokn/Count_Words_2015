@@ -8,11 +8,7 @@ def largest_value(hash)
 	v = 0
 
 	hash.each do |key, value| 
-		if value.is_a? Numeric
-			if value > v
-				v = value
-			end
-		else
+		if !value.is_a? Numeric
 			value.each do |key1, value1|
 				if value1 > v
 					v = value1
@@ -47,13 +43,7 @@ def svg_gen(filename)
 	        
 		word_counts.each do |word, count|
 			if count.is_a? Numeric
-				v = count.to_f/maxCount.to_f
-				height = (max - min) * v
-
-				f.write(make_square(c * (width + offset), offset + maxWidth - height, width, height))
-				f.write('<text x="' + (c * (width + offset) + 28).to_s + '" y="' + (offset + maxWidth - 10).to_s + '">' + count.to_s + '</text>')
-				f.write('<text x="' + (c * (width + offset) + 35).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + word + '</text>')
-				c = c + 1
+				f.write('<text x="' + (c * (width + offset) + 15).to_s + '" y="' + (offset + maxWidth + 150).to_s + '">' + word + ': ' + count.to_s + '</text>')
 			else 
 				count.each do |word2, count2|
 					v = count2.to_f/maxCount.to_f
