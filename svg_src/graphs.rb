@@ -46,11 +46,7 @@ def svg_gen(filename)
 		maxCount = largest_value(word_counts)
 	        
 		word_counts.each do |word, count|
-			if count.is_a? Numeric  
-        			if(maxCount < count)
-        				maxCount = count
-				end
-				
+			if count.is_a? Numeric
 				v = count.to_f/maxCount.to_f
 				height = (max - min) * v
 
@@ -60,10 +56,6 @@ def svg_gen(filename)
 				c = c + 1
 			else 
 				count.each do |word2, count2|
-					if(maxCount < count2)
-						maxCount = count2
-					end
-					
 					v = count2.to_f/maxCount.to_f
 					height = (max - min) * v
 
