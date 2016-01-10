@@ -4,15 +4,40 @@ class WordCounter
 		text.gsub!(/(\/\/.*\n)|(\/\*([\s\S]*?)\*\/)/, ' ')
 		end
 	def self.get_strings_c text
-		strings = text.scan(/".*?"/)
-		text.gsub!(/".*?"/,' ')
-		strings.concat text.scan(/\'.*?\'/)
-		text.gsub!(/\'.*?\'/,' ')
+		strings = text.scan(/("")|(\'\')/)
+		i=0
+		while i < strings.size()
+			if strings[i][0] == nil
+				strings[i] = strings[i][1]
+			else
+				strings[i] = strings[i][0]
+				strings[i] = '\\' + strings[i] + '"'
+				strings[i][-2] = '\\'
+				#Don't ask how this works
+			end
+			i += 1
+		end
+		text.gsub!(/("")|(\'\')/,' ')
+		i=strings.size
+		strings.concat text.scan(/(".*?[^\\]")|(\'.*?[^\\]\')/)
+		while i < strings.size()
+			if strings[i][0] == nil
+				strings[i] = strings[i][1]
+			else
+				strings[i] = strings[i][0]
+				strings[i] = '\\' + strings[i] + '"'
+				strings[i][-2] = '\\'
+				#Don't ask how this works
+			end
+			i += 1
+		end
+		text.gsub!(/(".*?[^\\]")|(\'.*?\')/,' ')
 		strings
 	end
 	def self.parse_c text
 		text = text.gsub(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}']/,' ').gsub(/\s[0-9][^\s]*/,'').gsub(/\./,' ')
 	end
+
 	def self.get_marks text
 		text.scan(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}\.]/).size
 	end
@@ -37,6 +62,10 @@ class WordCounter
 		end
 	  	text.downcase!
 		text.split(' ').each do |word|
+			if( word == "y\"" )
+				puts "bang"
+				exit
+			end
 		  	words[word] = 0 if words[word]==nil
 		    words[word] += 1
 		end

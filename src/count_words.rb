@@ -62,9 +62,9 @@ else
 	File.open(output_filename,'w') do |file|
         file << "{\n"
 		sorted_words.each do |word, times|
-			file << "\"#{word.gsub(/\"/, "\\\"")}\" : \"#{times}\",\n"
+			file << "\"#{word}\" : \"#{times}\",\n"
 		end
-		file << "\"marks\" : #{marks}\n"
+		file << "\"marks\" : \"#{marks}\"\n"
         file << "}\n"
 	end
 
