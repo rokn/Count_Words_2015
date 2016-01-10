@@ -11,12 +11,11 @@ def valid_language? str
 end
 
 
-if ARGV[0] == "--help" || !valid_language?(ARGV[0]) || ARGV.size < 2
+if ARGV[0] == "--help" || !valid_language?(ARGV[0]) || ARGV.size < 3
 	puts "Usage: ruby count_words.rb language directory/filename output_file"
 	puts "First argument: the language of the files to be parsed (eather c, java or ruby)"
 	puts "Second argument: the name of the input file or a directory"
 	puts "Third argument: the name of the output file"
-	puts "If the third argument is not given, the program prints to the standart output"
 else
 	target_language = ARGV[0].downcase
 
@@ -29,41 +28,47 @@ else
 	end
 
 	counted_words = Hash.new
+	marks = 0
 
-	file_no = 0
+	total_files = 0
+	parsed_files = 0
+	total_lines = 0
 	files.each do |filename|
-		file_no += 1
 		ext = get_file_extension filename
 		
 		type = String.new
 		type = 'c' if( ext=='cpp' || ext=='cc' || ext=='h' || ext=='hpp' )
 		type = 'ruby' if( ext=='rb' )
+		type = 'java' if( ext=='java' )
 
 		if type == target_language
-			print "#{file_no}: #{filename} : " if output_filename != nil
-			file = File.open(filename,"r")
-			text = String.new
-			file.each { |line| text << line }
-			puts text.encoding if output_filename != nil
-			
-			WordCounter.count_words text, type, counted_words
+			total_files += 1
+			puts "#{total_files}: #{filename}"
+			begin
+				file = File.open(filename,"r")
+				text = String.new
+				file.each { |line| text << line }
+				total_lines += text.lines.count
+				marks += WordCounter.count_words text, type, counted_words
+				parsed_files += 1
+			rescue ArgumentError
+				puts "Error"
+			end
 		end
 	end
 
 	sorted_words = WordCounter.sort_words counted_words
 
-	if output_filename == nil
+	File.open(output_filename,'w') do |file|
+        file << "{\n"
 		sorted_words.each do |word, times|
-		  puts "#{word} #{times}"
+			file << "\"#{word.gsub(/\"/, "\\\"")}\" : \"#{times}\",\n"
 		end
-	else
-	  File.open(output_filename,'w') do |file|
-            file << "{\n"
-			sorted_words.each do |word, times|
-			  file << "\"#{word}\" : \"#{times}\",\n"
-			end
-            file << "}\n"
-          end
+		file << "\"marks\" : #{marks}\n"
+        file << "}\n"
 	end
+
+	puts "#{parsed_files}/#{total_files} parsed successfully"
+	puts "#{total_lines} in total"
 
 end
