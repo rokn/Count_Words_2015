@@ -1,3 +1,4 @@
+require 'json'
 require_relative 'word_counter.rb'
 
 def get_file_extension filename
@@ -61,11 +62,10 @@ else
 
 	File.open(output_filename,'w') do |file|
         file << "{\n"
-		sorted_words.each do |word, times|
-			file << "\"#{word}\" : \"#{times}\",\n"
-		end
-		file << "\"marks\" : \"#{marks}\"\n"
-        file << "}\n"
+		file << "\"marks\": #{marks},\n"
+		file << "\"words\":\n"
+		file << JSON.pretty_generate(sorted_words)
+        file << "\n}"
 	end
 
 	puts "#{parsed_files}/#{total_files} parsed successfully"
