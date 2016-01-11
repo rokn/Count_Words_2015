@@ -1,119 +1,86 @@
-require 'mime/types'
+class Spinach::Features::ProjectCommitsBranches < Spinach::FeatureSteps
+  include SharedAuthentication
+  include SharedProject
+  include SharedPaths
 
-module API
-  # Projects API
-  class Branches < Grape::API
-    before { authenticate! }
-    before { authorize! :download_code, user_project }
+  step 'I click link "All"' do
+    click_link "All"
+  end
 
-    resource :projects do
-      # Get a project repository branches
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id/repository/branches
-      get ":id/repository/branches" do
-        branches = user_project.repository.branches.sort_by(&:name)
-        present branches, with: Entities::RepoObject, project: user_project
-      end
+  step 'I should see "Shop" all branches list' do
+    expect(page).to have_content "Branches"
+    expect(page).to have_content "master"
+  end
 
-      # Get a single branch
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   branch (required) - The name of the branch
-      # Example Request:
-      #   GET /projects/:id/repository/branches/:branch
-      get ':id/repository/branches/:branch', requirements: { branch: /.*/ } do
-        @branch = user_project.repository.branches.find { |item| item.name == params[:branch] }
-        not_found!("Branch") unless @branch
-        present @branch, with: Entities::RepoObject, project: user_project
-      end
+  step 'I click link "Protected"' do
+    click_link "Protected"
+  end
 
-      # Protect a single branch
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   branch (required) - The name of the branch
-      # Example Request:
-      #   PUT /projects/:id/repository/branches/:branch/protect
-      put ':id/repository/branches/:branch/protect',
-          requirements: { branch: /.*/ } do
-
-        authorize_admin_project
-
-        @branch = user_project.repository.find_branch(params[:branch])
-        not_found!("Branch") unless @branch
-        protected_branch = user_project.protected_branches.find_by(name: @branch.name)
-        user_project.protected_branches.create(name: @branch.name) unless protected_branch
-
-        present @branch, with: Entities::RepoObject, project: user_project
-      end
-
-      # Unprotect a single branch
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   branch (required) - The name of the branch
-      # Example Request:
-      #   PUT /projects/:id/repository/branches/:branch/unprotect
-      put ':id/repository/branches/:branch/unprotect',
-          requirements: { branch: /.*/ } do
-
-        authorize_admin_project
-
-        @branch = user_project.repository.find_branch(params[:branch])
-        not_found!("Branch does not exist") unless @branch
-        protected_branch = user_project.protected_branches.find_by(name: @branch.name)
-        protected_branch.destroy if protected_branch
-
-        present @branch, with: Entities::RepoObject, project: user_project
-      end
-
-      # Create branch
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   branch_name (required) - The name of the branch
-      #   ref (required) - Create branch from commit sha or existing branch
-      # Example Request:
-      #   POST /projects/:id/repository/branches
-      post ":id/repository/branches" do
-        authorize_push_project
-        result = CreateBranchService.new(user_project, current_user).
-          execute(params[:branch_name], params[:ref])
-
-        if result[:status] == :success
-          present result[:branch],
-                  with: Entities::RepoObject,
-                  project: user_project
-        else
-          render_api_error!(result[:message], 400)
-        end
-      end
-
-      # Delete branch
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      #   branch (required) - The name of the branch
-      # Example Request:
-      #   DELETE /projects/:id/repository/branches/:branch
-      delete ":id/repository/branches/:branch",
-          requirements: { branch: /.*/ } do
-        authorize_push_project
-        result = DeleteBranchService.new(user_project, current_user).
-          execute(params[:branch])
-
-        if result[:status] == :success
-          {
-            branch_name: params[:branch]
-          }
-        else
-          render_api_error!(result[:message], result[:return_code])
-        end
-      end
+  step 'I should see "Shop" protected branches list' do
+    page.within ".protected-branches-list" do
+      expect(page).to have_content "stable"
+      expect(page).not_to have_content "master"
     end
+  end
+
+  step 'project "Shop" has protected branches' do
+    project = Project.find_by(name: "Shop")
+    project.protected_branches.create(name: "stable")
+  end
+
+  step 'I click new branch link' do
+    click_link "New branch"
+  end
+
+  step 'I submit new branch form' do
+    fill_in 'branch_name', with: 'deploy_keys'
+    fill_in 'ref', with: 'master'
+    click_button 'Create branch'
+  end
+
+  step 'I submit new branch form with invalid name' do
+    fill_in 'branch_name', with: '1.0 stable'
+    fill_in 'ref', with: 'master'
+    click_button 'Create branch'
+  end
+
+  step 'I submit new branch form with invalid reference' do
+    fill_in 'branch_name', with: 'foo'
+    fill_in 'ref', with: 'foo'
+    click_button 'Create branch'
+  end
+
+  step 'I submit new branch form with branch that already exists' do
+    fill_in 'branch_name', with: 'master'
+    fill_in 'ref', with: 'master'
+    click_button 'Create branch'
+  end
+
+  step 'I should see new branch created' do
+    expect(page).to have_content 'deploy_keys'
+  end
+
+  step 'I should see new an error that branch is invalid' do
+    expect(page).to have_content 'Branch name is invalid'
+    expect(page).to have_content "can't contain spaces"
+  end
+
+  step 'I should see new an error that ref is invalid' do
+    expect(page).to have_content 'Invalid reference name'
+  end
+
+  step 'I should see new an error that branch already exists' do
+    expect(page).to have_content 'Branch already exists'
+  end
+
+  step "I click branch 'improve/awesome' delete link" do
+    page.within '.js-branch-improve\/awesome' do
+      find('.btn-remove').click
+      sleep 0.05
+    end
+  end
+
+  step "I should not see branch 'improve/awesome'" do
+    expect(page.all(visible: true)).not_to have_content 'improve/awesome'
   end
 end

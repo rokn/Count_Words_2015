@@ -5,41 +5,28 @@
 #------------------------------------------------------------------------------
 require 'spec_helper'
 
-describe "/contacts/new" do
-  include ContactsHelper
-
+describe "admin/users/new" do
   before do
-    login_and_assign
-    @account = FactoryGirl.create(:account)
-    assign(:contact, Contact.new(user: current_user))
-    assign(:users, [current_user])
-    assign(:account, @account)
-    assign(:accounts, [@account])
+    login_and_assign(admin: true)
+    assign(:user, User.new)
   end
 
-  it "should toggle empty message div if it exists" do
-    render
-
-    expect(rendered).to include("crm.flick('empty', 'toggle')")
-  end
-
-  describe "new contact" do
-    it "should render [new] template into :create_contact div" do
+  describe "new user" do
+    it "shows [create user] form" do
       params[:cancel] = nil
       render
 
-      expect(rendered).to include("$('#create_contact').html")
-      expect(rendered).to include("crm.create_or_select_account(false)")
+      expect(rendered).to include("$('#create_user').html")
     end
   end
 
-  describe "cancel new contact" do
-    it "should hide [create contact] form" do
+  describe "cancel new user" do
+    it "hides [create user] form" do
       params[:cancel] = "true"
       render
 
-      expect(rendered).not_to include("$('#create_contact').html")
-      expect(rendered).to include("crm.flip_form('create_contact');")
+      expect(rendered).to include("crm.set_title('create_user', 'Users');")
+      expect(rendered).to include("crm.flip_form('create_user');")
     end
   end
 end

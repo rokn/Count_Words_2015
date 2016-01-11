@@ -1,20 +1,7 @@
-class Notifications::StartedSharing < Notification
-  def mail_job
-    Workers::Mail::StartedSharing
+module NotificationMailers
+  class StartedSharing < NotificationMailers::Base
+    def set_headers
+      @headers[:subject] = I18n.t('notifier.started_sharing.subject', :name => @sender.name)
+    end
   end
-
-  def popup_translation_key
-    'notifications.started_sharing'
-  end
-
-  def email_the_user(target, actor)
-    super(target.sender, actor)
-  end
-
-  private
-
-  def self.make_notification(recipient, target, actor, notification_type)
-    super(recipient, target.sender, actor, notification_type)
-  end
-
 end

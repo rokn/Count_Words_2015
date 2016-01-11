@@ -1,41 +1,21 @@
-# Copyright (c) 2010-2012, Diaspora Inc. This file is
-# licensed under the Affero General Public License version 3 or later. See
-# the COPYRIGHT file.
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
+module FatFreeCRM
+  class MissingSettings < StandardError; end
+  class ObsoleteSettings < StandardError; end
+end
 
-module Diaspora
-  # the post in question is not public, and that is somehow a problem
-  class NonPublic < StandardError
-  end
+class ActionController::Base
+  rescue_from FatFreeCRM::MissingSettings,  with: :render_fat_free_crm_exception
+  rescue_from FatFreeCRM::ObsoleteSettings, with: :render_fat_free_crm_exception
 
-  # the account was closed and that should not be the case if we want
-  # to continue
-  class AccountClosed < StandardError
-  end
+  private
 
-  # something that should be accessed does not belong to the current user and
-  # that prevents further execution
-  class NotMine < StandardError
-  end
-
-  # Received a message without having a contact
-  class ContactRequiredUnlessRequest < StandardError
-  end
-
-  # Got a relayable (comment, like etc.) without having the parent
-  class RelayableObjectWithoutParent < StandardError
-  end
-
-  # After building an object the author doesn't match the one in the
-  # original XML message
-  class AuthorXMLAuthorMismatch < StandardError
-  end
-
-  # Tried to fetch a post but it was deleted, not valid
-  # or the remote end doesn't support post fetching
-  class PostNotFetchable < StandardError
-  end
-
-  # Error while parsing an received message and got nil
-  class XMLNotParseable < StandardError
+  def render_fat_free_crm_exception(exception)
+    logger.error exception.inspect
+    render layout: false, template: "/layouts/500", format: :html, status: 500, locals: { exception: exception }
   end
 end

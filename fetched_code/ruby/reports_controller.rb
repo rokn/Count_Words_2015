@@ -1,27 +1,65 @@
-require_dependency 'report'
+module Spree
+  module Admin
+    class ReportsController < Spree::Admin::BaseController
+      respond_to :html
 
-class Admin::ReportsController < Admin::AdminController
+      class << self
+        def available_reports
+          @@available_reports
+        end
 
-  def show
-    report_type = params[:type]
+        def add_available_report!(report_key, report_description_key = nil)
+          if report_description_key.nil?
+            report_description_key = "#{report_key}_description"
+          end
+          @@available_reports[report_key] = {name: Spree.t(report_key), description: Spree.t(report_description_key)}
+        end
+      end
 
-    raise Discourse::NotFound unless report_type =~ /^[a-z0-9\_]+$/
+      def initialize
+        super 
+        ReportsController.add_available_report!(:sales_total)
+      end
 
-    start_date = 1.month.ago
-    start_date = Time.parse(params[:start_date]) if params[:start_date].present?
+      def index
+        @reports = ReportsController.available_reports
+      end
 
-    end_date = start_date + 1.month
-    end_date = Time.parse(params[:end_date]) if params[:end_date].present?
+      def sales_total
+        params[:q] = {} unless params[:q]
 
-    category_id = if params.has_key?(:category_id)
-      params[:category_id].blank? ? SiteSetting.uncategorized_category_id : params[:category_id].to_i
+        if params[:q][:completed_at_gt].blank?
+          params[:q][:completed_at_gt] = Time.zone.now.beginning_of_month
+        else
+          params[:q][:completed_at_gt] = Time.zone.parse(params[:q][:completed_at_gt]).beginning_of_day rescue Time.zone.now.beginning_of_month
+        end
+
+        if params[:q] && !params[:q][:completed_at_lt].blank?
+          params[:q][:completed_at_lt] = Time.zone.parse(params[:q][:completed_at_lt]).end_of_day rescue ""
+        end
+
+        params[:q][:s] ||= "completed_at desc"
+
+        @search = Order.complete.ransack(params[:q])
+        @orders = @search.result
+
+        @totals = {}
+        @orders.each do |order|
+          @totals[order.currency] = { :item_total => ::Money.new(0, order.currency), :adjustment_total => ::Money.new(0, order.currency), :sales_total => ::Money.new(0, order.currency) } unless @totals[order.currency]
+          @totals[order.currency][:item_total] += order.display_item_total.money
+          @totals[order.currency][:adjustment_total] += order.display_adjustment_total.money
+          @totals[order.currency][:sales_total] += order.display_total.money
+        end
+      end
+
+      private
+
+      def model_class
+        Spree::Admin::ReportsController
+      end
+
+      @@available_reports = {}
+
     end
-
-    report = Report.find(report_type, start_date: start_date, end_date: end_date, category_id: category_id)
-
-    raise Discourse::NotFound if report.blank?
-
-    render_json_dump(report: report)
   end
-
 end

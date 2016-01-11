@@ -1,74 +1,36 @@
-require_dependency 'email/renderer'
+class EmailController < ApplicationController
+  skip_before_filter :check_xhr, :preload_json
+  layout 'no_ember'
 
-class Admin::EmailController < Admin::AdminController
+  before_filter :ensure_logged_in, only: :preferences_redirect
+  skip_before_filter :redirect_to_login_if_required
 
-  def index
-    data = { delivery_method: delivery_method, settings: delivery_settings }
-    render_json_dump(data)
+  def preferences_redirect
+    redirect_to(email_preferences_path(current_user.username_lower))
   end
 
-  def test
-    params.require(:email_address)
-    begin
-      Jobs::TestEmail.new.execute(to_address: params[:email_address])
-      render nothing: true
-    rescue => e
-      render json: {errors: [e.message]}, status: 422
+  def unsubscribe
+    @user = DigestUnsubscribeKey.user_for_key(params[:key])
+
+    # Don't allow the use of a key while logged in as a different user
+    if current_user.present? && (@user != current_user)
+      @different_user = true
+      return
     end
+
+    if @user.blank?
+      @not_found = true
+      return
+    end
+
+    @user.update_column(:email_digests, false)
+    @success = true
   end
 
-  def all
-    email_logs = filter_email_logs(EmailLog.all, params)
-    render_serialized(email_logs, EmailLogSerializer)
+  def resubscribe
+    @user = DigestUnsubscribeKey.user_for_key(params[:key])
+    raise Discourse::NotFound unless @user.present?
+    @user.update_column(:email_digests, true)
   end
 
-  def sent
-    email_logs = filter_email_logs(EmailLog.sent, params)
-    render_serialized(email_logs, EmailLogSerializer)
-  end
-
-  def skipped
-    email_logs = filter_email_logs(EmailLog.skipped, params)
-    render_serialized(email_logs, EmailLogSerializer)
-  end
-
-  def preview_digest
-    params.require(:last_seen_at)
-    params.require(:username)
-    user = User.find_by_username(params[:username])
-    renderer = Email::Renderer.new(UserNotifications.digest(user, since: params[:last_seen_at]))
-    render json: MultiJson.dump(html_content: renderer.html, text_content: renderer.text)
-  end
-
-  def handle_mail
-    params.require(:email)
-    Email::Receiver.new(params[:email]).process
-    render text: "email was processed"
-  end
-
-  private
-
-  def filter_email_logs(email_logs, params)
-    email_logs = email_logs.limit(50).includes(:user).order("email_logs.created_at desc").references(:user)
-    email_logs = email_logs.where("users.username LIKE ?", "%#{params[:user]}%") if params[:user].present?
-    email_logs = email_logs.where("email_logs.to_address LIKE ?", "%#{params[:address]}%") if params[:address].present?
-    email_logs = email_logs.where("email_logs.email_type LIKE ?", "%#{params[:type]}%") if params[:type].present?
-    email_logs = email_logs.where("email_logs.reply_key LIKE ?", "%#{params[:reply_key]}%") if params[:reply_key].present?
-    email_logs = email_logs.where("email_logs.skipped_reason LIKE ?", "%#{params[:skipped_reason]}%") if params[:skipped_reason].present?
-    email_logs.to_a
-  end
-
-  def delivery_settings
-    action_mailer_settings
-      .reject { |k, _| k == :password }
-      .map    { |k, v| { name: k, value: v }}
-  end
-
-  def delivery_method
-    ActionMailer::Base.delivery_method
-  end
-
-  def action_mailer_settings
-    ActionMailer::Base.public_send "#{delivery_method}_settings"
-  end
 end

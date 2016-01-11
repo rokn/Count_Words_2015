@@ -1,167 +1,71 @@
-# coding: utf-8
 #   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-require 'spec_helper'
+module Diaspora
+  module Taggable
+    def self.included(model)
+      model.class_eval do
+        cattr_accessor :field_with_tags
 
-shared_examples_for "it is taggable" do
-  include ActionView::Helpers::UrlHelper
+        # validate tag's name maximum length [tag's name should be less than or equal to 255 chars]
+        validate :tag_name_max_length, on: :create
 
-  def tag_link(s)
-    link_to  "##{s}", "/tags/#{s}", :class => 'tag'
-  end
-
-  describe '.format_tags' do
-    before do
-      @str = '#what #hey #vöglein'
-      @object.send(@object.class.field_with_tags_setter, @str)
-      @object.build_tags
-      @object.save!
-    end
-
-    it "supports non-ascii characters" do
-      expect(@object.tags(true).map(&:name)).to include('vöglein')
-    end
-
-    it 'links each tag' do
-      formatted_string = Diaspora::Taggable.format_tags(@str)
-      expect(formatted_string).to include(tag_link('what'))
-      expect(formatted_string).to include(tag_link('hey'))
-      expect(formatted_string).to include(tag_link('vöglein'))
-    end
-
-    it 'responds to plain_text' do
-      expect(Diaspora::Taggable.format_tags(@str, :plain_text => true)).to eq(@str)
-    end
-
-    it "doesn't mangle text when tags are involved" do
-      expected = {
-        nil => '',
-        '' => '',
-        'abc' => 'abc',
-        'a #b c' => "a #{tag_link('b')} c",
-        '#'                      => '#',
-        '##'                     => '##',
-        '###'                    => '###',
-        '#a'                     => tag_link('a'),
-        '#foobar'                => tag_link('foobar'),
-        '#foocar<br>'            => "#{tag_link('foocar')}&lt;br&gt;",
-        '#fooo@oo'               => "#{tag_link('fooo')}@oo",
-        '#num3ric hash tags'     => "#{tag_link('num3ric')} hash tags",
-        '#12345 tag'             => "#{tag_link('12345')} tag",
-        '#12cde tag'             => "#{tag_link('12cde')} tag",
-        '#abc45 tag'             => "#{tag_link('abc45')} tag",
-        '#<3'                    => %{<a class="tag" href="/tags/<3">#&lt;3</a>},
-        'i #<3'                  => %{i <a class="tag" href="/tags/<3">#&lt;3</a>},
-        'i #<3 you'              => %{i <a class="tag" href="/tags/<3">#&lt;3</a> you},
-        '#<4'                    => '#&lt;4',
-        'test#foo test'          => 'test#foo test',
-        'test.#joo bar'          => 'test.#joo bar',
-        'test #foodar test'      => "test #{tag_link('foodar')} test",
-        'test #foofar<br> test'  => "test #{tag_link('foofar')}&lt;br&gt; test",
-        'test #gooo@oo test'     => "test #{tag_link('gooo')}@oo test",
-        'test #foo-test test'    => "test #{tag_link('foo-test')} test",
-        'test #hoo'              => "test #{tag_link('hoo')}",
-        'test #two_word tags'    => "test #{tag_link('two_word')} tags",
-        'test #three_word_tags'  => "test #{tag_link('three_word_tags')}",
-        '#terminal_underscore_'  => tag_link('terminal_underscore_'),
-        '#terminalunderscore_'   => tag_link('terminalunderscore_'),
-        '#_initialunderscore'    => tag_link('_initialunderscore'),
-        '#_initial_underscore'   => tag_link('_initial_underscore'),
-        '#terminalhyphen-'       => tag_link('terminalhyphen-'),
-        '#terminal-hyphen-'      => tag_link('terminal-hyphen-'),
-        '#terminalhyphen- tag'   => "#{tag_link('terminalhyphen-')} tag",
-        '#-initialhyphen'        => tag_link('-initialhyphen'),
-        '#-initialhyphen tag'    => "#{tag_link('-initialhyphen')} tag",
-        '#-initial-hyphen'       => tag_link('-initial-hyphen'),
-      }
-
-      expected.each do |input,output|
-        expect(Diaspora::Taggable.format_tags(input)).to eq(output)
+        # tag's name is limited to 255 charchters according to ActsAsTaggableOn gem, so we check the length of the name for each tag
+        def tag_name_max_length
+          self.tag_list.each do |tag|
+            errors[:tags] << I18n.t('tags.name_too_long', :count => 255, :current_length => tag.length) if tag.length > 255
+          end
+        end
+        protected :tag_name_max_length
       end
-    end
-  end
+      model.instance_eval do
+        before_validation :build_tags # build tags before validation fixs the too long tag name issue #5737
 
-  describe '#build_tags' do
-    it 'builds the tags' do
-      @object.send(@object.class.field_with_tags_setter, '#what')
-      @object.build_tags
-      expect(@object.tag_list).to eq(['what'])
-      expect {
-        @object.save
-      }.to change{@object.tags.count}.by(1)
-    end
-  end
-
-  describe '#tag_strings' do
-    it 'returns a string for every #thing' do
-      str = '#what #hey #that"smybike. #@hey ##boo # #THATWASMYBIKE #vöglein #hey#there #135440we #abc/23 ### #h!gh #ok? #see: #re:publica'
-      arr = ['what', 'hey', 'that', 'THATWASMYBIKE', 'vöglein', '135440we', 'abc', 'h', 'ok', 'see', 're']
-
-      @object.send(@object.class.field_with_tags_setter, str)
-      expect(@object.tag_strings).to match_array(arr)
-    end
-
-    it 'extracts tags despite surrounding text' do
-      expected = {
-        ''                       => nil,
-        '#'                      => nil,
-        '##'                     => nil,
-        '###'                    => nil,
-        '#a'                     => 'a',
-        '#foobar'                => 'foobar',
-        '#foocar<br>'            => 'foocar',
-        '#fooo@oo'               => 'fooo',
-        '#num3ric hash tags'     => 'num3ric',
-        '#12345 tag'             => '12345',
-        '#12cde tag'             => '12cde',
-        '#abc45 tag'             => 'abc45',
-        '#<3'                    => '<3',
-        '#<4'                    => nil,
-        'test#foo test'          => nil,
-        'test.#joo bar'          => nil,
-        'test #foodar test'      => 'foodar',
-        'test #foofar<br> test'  => 'foofar',
-        'test #gooo@oo test'     => 'gooo',
-        'test #<3 test'          => '<3',
-        'test #foo-test test'    => 'foo-test',
-        'test #hoo'              => 'hoo',
-        'test #two_word tags'    => 'two_word',
-        'test #three_word_tags'  => 'three_word_tags',
-        '#terminal_underscore_'  => 'terminal_underscore_',
-        '#terminalunderscore_'   => 'terminalunderscore_',
-        '#_initialunderscore'    => '_initialunderscore',
-        '#_initial_underscore'   => '_initial_underscore',
-        '#terminalhyphen-'       => 'terminalhyphen-',
-        '#terminal-hyphen-'      => 'terminal-hyphen-',
-        '#terminalhyphen- tag'   => 'terminalhyphen-',
-        '#-initialhyphen'        => '-initialhyphen',
-        '#-initialhyphen tag'    => '-initialhyphen',
-        '#-initial-hyphen'       => '-initial-hyphen',
-        "\u202a#\u200eUSA\u202c" => 'USA'
-      }
-
-      expected.each do |text,hashtag|
-        @object.send  @object.class.field_with_tags_setter, text
-        expect(@object.tag_strings).to eq([hashtag].compact)
+        def extract_tags_from sym
+          self.field_with_tags = sym
+        end
+        def field_with_tags_setter
+          "#{self.field_with_tags}=".to_sym
+        end
       end
     end
 
-    it 'returns no duplicates' do
-      str = '#what #what #what #whaaaaaaaaaat'
-      arr = ['what','whaaaaaaaaaat']
-
-      @object.send(@object.class.field_with_tags_setter, str)
-      expect(@object.tag_strings).to match_array(arr)
+    def build_tags
+      self.tag_list = tag_strings
     end
 
-    it 'is case insensitive' do
-      str = '#what #wHaT #WHAT'
-      arr = ['what']
+    def tag_strings
+      MessageRenderer::Processor.normalize(send(self.class.field_with_tags) || "")
+        .scan(/(?:^|\s)#([#{ActsAsTaggableOn::Tag.tag_text_regexp}]+|<3)/u)
+        .map(&:first)
+        .uniq(&:downcase)
+    end
 
-      @object.send(@object.class.field_with_tags_setter, str)
-      expect(@object.tag_strings).to match_array(arr)
+    def self.format_tags(text, opts={})
+      return text if opts[:plain_text]
+
+      text = ERB::Util.h(text) unless opts[:no_escape]
+      regex =/(^|\s|>)#([#{ActsAsTaggableOn::Tag.tag_text_regexp}]+|&lt;3)/u
+
+      text.to_str.gsub(regex) { |matched_string|
+        pre, url_bit, clickable = $1, $2, "##{$2}"
+        if $2 == '&lt;3'
+          # Special case for love, because the world needs more love.
+          url_bit = '<3'
+        end
+
+        %{#{pre}<a class="tag" href="/tags/#{url_bit}">#{clickable}</a>}
+      }.html_safe
+    end
+
+    def self.format_tags_for_mail(text)
+      regex = /(?<=^|\s|>)#([#{ActsAsTaggableOn::Tag.tag_text_regexp}]+|<3)/u
+      text.gsub(regex) do |tag|
+        opts = {name: ActsAsTaggableOn::Tag.normalize(tag)}
+               .merge(Rails.application.config.action_mailer.default_url_options)
+        "[#{tag}](#{Rails.application.routes.url_helpers.tag_url(opts)})"
+      end
     end
   end
 end

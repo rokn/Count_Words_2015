@@ -1,45 +1,53 @@
-require 'rails_helper'
-require 'email'
+require 'spec_helper'
 
-describe Email do
+describe EmailValidator do
 
-  describe "is_valid?" do
-
-    it 'treats a nil as invalid' do
-      expect(Email.is_valid?(nil)).to eq(false)
-    end
-
-    it 'treats a good email as valid' do
-      expect(Email.is_valid?('sam@sam.com')).to eq(true)
-    end
-
-    it 'treats a bad email as invalid' do
-      expect(Email.is_valid?('sam@sam')).to eq(false)
-    end
-
-    it 'allows museum tld' do
-      expect(Email.is_valid?('sam@nic.museum')).to eq(true)
-    end
-
-    it 'does not think a word is an email' do
-      expect(Email.is_valid?('sam')).to eq(false)
-    end
-
+  class Tester
+    include ActiveModel::Validations
+    attr_accessor :email_address
+    validates :email_address, email: true
   end
 
-  describe "downcase" do
+  let(:valid_emails) {[
+    'valid@email.com',
+    'valid@email.com.uk',
+    'e@email.com',
+    'valid+email@email.com',
+    'valid-email@email.com',
+    'valid_email@email.com',
+    'validemail_@email.com',
+    'valid.email@email.com'
+  ]}
+  let(:invalid_emails) {[
+    '',
+    ' ',
+    'invalid email@email.com',
+    'invalidemail @email.com',
+    'invalidemail@email..com',
+    '.invalid.email@email.com',
+    'invalid.email.@email.com',
+    '@email.com',
+    '.@email.com',
+    'invalidemailemail.com',
+    '@invalid.email@email.com',
+    'invalid@email@email.com',
+    'invalid.email@@email.com'
+  ]}
 
-    it 'downcases local and host part' do
-      expect(Email.downcase('SAM@GMAIL.COM')).to eq('sam@gmail.com')
-      expect(Email.downcase('sam@GMAIL.COM')).to eq('sam@gmail.com')
+  it 'validates valid email addresses' do
+    tester = Tester.new
+    valid_emails.each do |email|
+      tester.email_address = email
+      expect(tester.valid?).to be true
     end
+  end
 
-    it 'leaves invalid emails untouched' do
-      expect(Email.downcase('SAM@GMAILCOM')).to eq('SAM@GMAILCOM')
-      expect(Email.downcase('samGMAIL.COM')).to eq('samGMAIL.COM')
-      expect(Email.downcase('sam@GM@AIL.COM')).to eq('sam@GM@AIL.COM')
+  it 'validates invalid email addresses' do
+    tester = Tester.new
+    invalid_emails.each do |email|
+      tester.email_address = email
+      expect(tester.valid?).to be false
     end
-
   end
 
 end

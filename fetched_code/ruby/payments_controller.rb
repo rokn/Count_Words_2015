@@ -1,81 +1,102 @@
 module Spree
-  module Api
-    module V1
-      class PaymentsController < Spree::Api::BaseController
+  module Admin
+    class PaymentsController < Spree::Admin::BaseController
+      include Spree::Backend::Callbacks
 
-        before_action :find_order
-        before_action :find_payment, only: [:update, :show, :authorize, :purchase, :capture, :void]
+      before_action :load_order, only: [:create, :new, :index, :fire]
+      before_action :load_payment, except: [:create, :new, :index]
+      before_action :load_data
+      before_action :can_not_transition_without_customer_info
 
-        def index
-          @payments = @order.payments.ransack(params[:q]).result.page(params[:page]).per(params[:per_page])
-          respond_with(@payments)
+      respond_to :html
+
+      def index
+        @payments = @order.payments.includes(refunds: :reason)
+        @refunds = @payments.flat_map(&:refunds)
+        redirect_to new_admin_order_payment_url(@order) if @payments.empty?
+      end
+
+      def new
+        @payment = @order.payments.build
+      end
+
+      def create
+        invoke_callbacks(:create, :before)
+        @payment ||= @order.payments.build(object_params)
+        if @payment.payment_method.source_required? && params[:card].present? and params[:card] != 'new'
+          @payment.source = @payment.payment_method.payment_source_class.find_by_id(params[:card])
         end
 
-        def new
-          @payment_methods = Spree::PaymentMethod.available
-          respond_with(@payment_methods)
-        end
-
-        def create
-          @payment = @order.payments.build(payment_params)
+        begin
           if @payment.save
-            respond_with(@payment, status: 201, default_template: :show)
+            invoke_callbacks(:create, :after)
+            # Transition order as far as it will go.
+            while @order.next; end
+            # If "@order.next" didn't trigger payment processing already (e.g. if the order was
+            # already complete) then trigger it manually now
+            @payment.process! if @order.completed? && @payment.checkout?
+            flash[:success] = flash_message_for(@payment, :successfully_created)
+            redirect_to admin_order_payments_path(@order)
           else
-            invalid_resource!(@payment)
+            invoke_callbacks(:create, :fails)
+            flash[:error] = Spree.t(:payment_could_not_be_created)
+            render :new
           end
+        rescue Spree::Core::GatewayError => e
+          invoke_callbacks(:create, :fails)
+          flash[:error] = "#{e.message}"
+          redirect_to new_admin_order_payment_path(@order)
+        end
+      end
+
+      def fire
+        return unless event = params[:e] and @payment.payment_source
+
+        # Because we have a transition method also called void, we do this to avoid conflicts.
+        event = "void_transaction" if event == "void"
+        if @payment.send("#{event}!")
+          flash[:success] = Spree.t(:payment_updated)
+        else
+          flash[:error] = Spree.t(:cannot_perform_operation)
+        end
+      rescue Spree::Core::GatewayError => ge
+        flash[:error] = "#{ge.message}"
+      ensure
+        redirect_to admin_order_payments_path(@order)
+      end
+
+      private
+
+      def object_params
+        if params[:payment] and params[:payment_source] and source_params = params.delete(:payment_source)[params[:payment][:payment_method_id]]
+          params[:payment][:source_attributes] = source_params
         end
 
-        def update
-          authorize! params[:action], @payment
-          if !@payment.editable?
-            render 'update_forbidden', status: 403
-          elsif @payment.update_attributes(payment_params)
-            respond_with(@payment, default_template: :show)
-          else
-            invalid_resource!(@payment)
-          end
+        params.require(:payment).permit(permitted_payment_attributes)
+      end
+
+      def load_data
+        @amount = params[:amount] || load_order.total
+        @payment_methods = PaymentMethod.available_on_back_end
+        if @payment and @payment.payment_method
+          @payment_method = @payment.payment_method
+        else
+          @payment_method = @payment_methods.first
         end
+      end
 
-        def show
-          respond_with(@payment)
-        end
+      def load_order
+        @order = Order.friendly.find(params[:order_id])
+        authorize! action, @order
+        @order
+      end
 
-        def authorize
-          perform_payment_action(:authorize)
-        end
+      def load_payment
+        @payment = Payment.friendly.find(params[:id])
+      end
 
-        def capture
-          perform_payment_action(:capture)
-        end
-
-        def purchase
-          perform_payment_action(:purchase)
-        end
-
-        def void
-          perform_payment_action(:void_transaction)
-        end
-
-        private
-
-          def find_order
-            @order = Spree::Order.friendly.find(order_id)
-            authorize! :read, @order, order_token
-          end
-
-          def find_payment
-            @payment = @order.payments.friendly.find(params[:id])
-          end
-
-          def perform_payment_action(action, *args)
-            authorize! action, Payment
-            @payment.send("#{action}!", *args)
-            respond_with(@payment, default_template: :show)
-          end
-
-          def payment_params
-            params.require(:payment).permit(permitted_payment_attributes)
-          end
+      def model_class
+        Spree::Payment
       end
     end
   end

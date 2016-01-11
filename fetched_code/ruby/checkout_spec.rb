@@ -1,756 +1,514 @@
 require 'spec_helper'
-require 'spree/testing_support/order_walkthrough'
 
-describe Spree::Order, :type => :model do
-  let(:order) { Spree::Order.new }
+describe "Checkout", type: :feature, inaccessible: true, js: true do
 
-  before { create(:store) }
+  include_context 'checkout setup'
 
-  def assert_state_changed(order, from, to)
-    state_change_exists = order.state_changes.where(:previous_state => from, :next_state => to).exists?
-    assert state_change_exists, "Expected order to transition from #{from} to #{to}, but didn't."
-  end
-
-  context "with default state machine" do
-    let(:transitions) do
-      [
-        { :address => :delivery },
-        { :delivery => :payment },
-        { :payment => :confirm },
-        { :confirm => :complete },
-        { :payment => :complete },
-        { :delivery => :complete }
-      ]
+  context "visitor makes checkout as guest without registration" do
+    before(:each) do
+      stock_location.stock_items.update_all(count_on_hand: 1)
     end
 
-    it "has the following transitions" do
-      transitions.each do |transition|
-        transition = Spree::Order.find_transition(:from => transition.keys.first, :to => transition.values.first)
-        expect(transition).not_to be_nil
-      end
-    end
-
-    it "does not have a transition from delivery to confirm" do
-      transition = Spree::Order.find_transition(:from => :delivery, :to => :confirm)
-      expect(transition).to be_nil
-    end
-
-    it '.find_transition when contract was broken' do
-      expect(Spree::Order.find_transition({foo: :bar, baz: :dog})).to be_falsey
-    end
-
-    it '.remove_transition' do
-      options = {:from => transitions.first.keys.first, :to => transitions.first.values.first}
-      expect(Spree::Order).to receive_messages(
-        removed_transitions:    [],
-        next_event_transitions: transitions.dup
-      )
-      expect(Spree::Order.remove_transition(options)).to be_truthy
-      expect(Spree::Order.removed_transitions).to eql([options])
-      expect(Spree::Order.next_event_transitions).to_not include(transitions.first)
-    end
-
-    it '.remove_transition when contract was broken' do
-      expect(Spree::Order.remove_transition(nil)).to be_falsey
-    end
-
-    it "always return integer on checkout_step_index" do
-      expect(order.checkout_step_index("imnotthere")).to be_a Integer
-      expect(order.checkout_step_index("delivery")).to be > 0
-    end
-
-    it "passes delivery state when transitioning from address over delivery to payment" do
-      allow(order).to receive_messages :payment_required? => true
-      order.state = "address"
-      expect(order.passed_checkout_step?("delivery")).to be false
-      order.state = "delivery"
-      expect(order.passed_checkout_step?("delivery")).to be false
-      order.state = "payment"
-      expect(order.passed_checkout_step?("delivery")).to be true
-    end
-
-    context "#checkout_steps" do
-      context "when confirmation not required" do
-        before do
-          allow(order).to receive_messages :confirmation_required? => false
-          allow(order).to receive_messages :payment_required? => true
-        end
-
-        specify do
-          expect(order.checkout_steps).to eq(%w(address delivery payment complete))
-        end
-      end
-
-      context "when confirmation required" do
-        before do
-          allow(order).to receive_messages :confirmation_required? => true
-          allow(order).to receive_messages :payment_required? => true
-        end
-
-        specify do
-          expect(order.checkout_steps).to eq(%w(address delivery payment confirm complete))
-        end
-      end
-
-      context "when payment not required" do
-        before { allow(order).to receive_messages :payment_required? => false }
-        specify do
-          expect(order.checkout_steps).to eq(%w(address delivery complete))
-        end
-      end
-
-      context "when payment required" do
-        before { allow(order).to receive_messages :payment_required? => true }
-        specify do
-          expect(order.checkout_steps).to eq(%w(address delivery payment complete))
-        end
-      end
-    end
-
-    it "starts out at cart" do
-      expect(order.state).to eq("cart")
-    end
-
-    context "to address" do
+    context "defaults to use billing address" do
       before do
-        order.email = "user@example.com"
-        order.save!
+        add_mug_to_cart
+        Spree::Order.last.update_column(:email, "test@example.com")
+        click_button "Checkout"
       end
 
-      context "with a line item" do
-        before do
-          order.line_items << FactoryGirl.create(:line_item)
-        end
-
-        it "transitions to address" do
-          order.next!
-          assert_state_changed(order, 'cart', 'address')
-          expect(order.state).to eq("address")
-        end
-
-        it "doesn't raise an error if the default address is invalid" do
-          order.user = mock_model(Spree::LegacyUser, ship_address: Spree::Address.new, bill_address: Spree::Address.new)
-          expect { order.next! }.to_not raise_error
-        end
-
-        context "with default addresses" do
-          let(:default_address) { FactoryGirl.create(:address) }
-
-          before do
-            order.user = FactoryGirl.create(:user, "#{address_kind}_address" => default_address)
-            order.next!
-            order.reload
-          end
-
-          shared_examples "it cloned the default address" do
-            it do
-              default_attributes = default_address.attributes
-              order_attributes = order.send("#{address_kind}_address".to_sym).try(:attributes) || {}
-
-              expect(order_attributes.except('id', 'created_at', 'updated_at')).to eql(default_attributes.except('id', 'created_at', 'updated_at'))
-            end
-          end
-
-          it_behaves_like "it cloned the default address" do
-            let(:address_kind) { 'ship' }
-          end
-
-          it_behaves_like "it cloned the default address" do
-            let(:address_kind) { 'bill' }
-          end
-        end
+      it "should default checkbox to checked" do
+        expect(find('input#order_use_billing')).to be_checked
       end
 
-      it "cannot transition to address without any line items" do
-        expect(order.line_items).to be_blank
-        expect { order.next! }.to raise_error(StateMachines::InvalidTransition, /#{Spree.t(:there_are_no_items_for_this_order)}/)
+      it "should remain checked when used and visitor steps back to address step" do
+        fill_in_address
+        expect(find('input#order_use_billing')).to be_checked
       end
     end
 
-    context "from address" do
+    # Regression test for #4079
+    context "persists state when on address page" do
       before do
-        order.state = 'address'
-        allow(order).to receive(:has_available_payment)
-        shipment = FactoryGirl.create(:shipment, :order => order)
-        order.email = "user@example.com"
-        order.save!
+        add_mug_to_cart
+        click_button "Checkout"
       end
 
-      it "updates totals" do
-        allow(order).to receive_messages(:ensure_available_shipping_rates => true)
-        line_item = FactoryGirl.create(:line_item, :price => 10, :adjustment_total => 10)
-        line_item.variant.update_attributes!(price: 10)
-        order.line_items << line_item
-        tax_rate = create(:tax_rate, :tax_category => line_item.tax_category, :amount => 0.05)
-        allow(Spree::TaxRate).to receive_messages :match => [tax_rate]
-        FactoryGirl.create(:tax_adjustment, :adjustable => line_item, :source => tax_rate, order: order)
-        order.email = "user@example.com"
-        order.next!
-        expect(order.adjustment_total).to eq(0.5)
-        expect(order.additional_tax_total).to eq(0.5)
-        expect(order.included_tax_total).to eq(0)
-        expect(order.total).to eq(10.5)
-      end
-
-      it 'updates prices' do
-        allow(order).to receive_messages(ensure_available_shipping_rates: true)
-        line_item = FactoryGirl.create(:line_item, price: 10, adjustment_total: 10)
-        line_item.variant.update_attributes!(price: 20)
-        order.line_items << line_item
-        tax_rate = create :tax_rate,
-                          included_in_price: true,
-                          tax_category: line_item.tax_category,
-                          amount: 0.05
-        allow(Spree::TaxRate).to receive_messages(match: [tax_rate])
-        FactoryGirl.create :tax_adjustment,
-                           adjustable: line_item,
-                           source: tax_rate,
-                           order: order
-        order.email = "user@example.com"
-        order.next!
-        expect(order.adjustment_total).to eq(0)
-        expect(order.additional_tax_total).to eq(0)
-        expect(order.included_tax_total).to eq(0.95)
-        expect(order.total).to eq(20)
-      end
-
-      it "transitions to delivery" do
-        allow(order).to receive_messages(:ensure_available_shipping_rates => true)
-        order.next!
-        assert_state_changed(order, 'address', 'delivery')
-        expect(order.state).to eq("delivery")
-      end
-
-      it "does not call persist_order_address if there is no address on the order" do
-        # otherwise, it will crash
-        allow(order).to receive_messages(:ensure_available_shipping_rates => true)
-
-        order.user = FactoryGirl.create(:user)
-        order.save!
-
-        expect(order.user).to_not receive(:persist_order_address).with(order)
-        order.next!
-      end
-
-      it "calls persist_order_address on the order's user" do
-        allow(order).to receive_messages(:ensure_available_shipping_rates => true)
-
-        order.user = FactoryGirl.create(:user)
-        order.ship_address = FactoryGirl.create(:address)
-        order.bill_address = FactoryGirl.create(:address)
-        order.save!
-
-        expect(order.user).to receive(:persist_order_address).with(order)
-        order.next!
-      end
-
-      it "does not call persist_order_address on the order's user for a temporary address" do
-        allow(order).to receive_messages(:ensure_available_shipping_rates => true)
-
-        order.user = FactoryGirl.create(:user)
-        order.temporary_address = true
-        order.save!
-
-        expect(order.user).to_not receive(:persist_order_address)
-        order.next!
-      end
-
-      context "cannot transition to delivery" do
-        context "with an existing shipment" do
-          before do
-            line_item = FactoryGirl.create(:line_item, :price => 10)
-            order.line_items << line_item
-          end
-
-          context "if there are no shipping rates for any shipment" do
-            it "raises an InvalidTransitionError" do
-              transition = lambda { order.next! }
-              expect(transition).to raise_error(StateMachines::InvalidTransition, /#{Spree.t(:items_cannot_be_shipped)}/)
-            end
-
-            it "deletes all the shipments" do
-              order.next
-              expect(order.shipments).to be_empty
-            end
-          end
-        end
+      specify do
+        expect(Spree::Order.count).to eq 1
+        expect(Spree::Order.last.state).to eq "address"
       end
     end
 
-    context "to delivery" do
-      context 'when order has default selected_shipping_rate_id' do
-        let(:shipment) { create(:shipment, order: order) }
-        let(:shipping_method) { create(:shipping_method) }
-        let(:shipping_rate) { [
-          Spree::ShippingRate.create!(shipping_method: shipping_method, cost: 10.00, shipment: shipment)
-        ] }
-
-        before do
-          order.state = 'address'
-          shipment.selected_shipping_rate_id = shipping_rate.first.id
-          order.email = "user@example.com"
-          order.save!
-
-          allow(order).to receive(:has_available_payment)
-          allow(order).to receive(:create_proposed_shipments)
-          allow(order).to receive(:ensure_available_shipping_rates) { true }
-        end
-
-        it 'should invoke set_shipment_cost' do
-          expect(order).to receive(:set_shipments_cost)
-          order.next!
-        end
-
-        it 'should update shipment_total' do
-          expect { order.next! }.to change{ order.shipment_total }.by(10.00)
-        end
-      end
-    end
-
-    context "from delivery" do
+    # Regression test for #1596
+    context "full checkout" do
       before do
-        order.state = 'delivery'
-        allow(order).to receive(:apply_free_shipping_promotions)
+        shipping_method.calculator.update!(preferred_amount: 10)
+        mug.shipping_category = shipping_method.shipping_categories.first
+        mug.save!
       end
 
-      it "attempts to apply free shipping promotions" do
-        expect(order).to receive(:apply_free_shipping_promotions)
-        order.next!
+      it "does not break the per-item shipping method calculator", :js => true do
+        add_mug_to_cart
+        click_button "Checkout"
+
+        fill_in "order_email", :with => "test@example.com"
+        click_on 'Continue'
+        fill_in_address
+
+        click_button "Save and Continue"
+        expect(page).to_not have_content("undefined method `promotion'")
+        click_button "Save and Continue"
+        expect(page).to have_content("Shipping total: $10.00")
+      end
+    end
+
+    # Regression test for #4306
+    context "free shipping" do
+      before do
+        add_mug_to_cart
+        click_button "Checkout"
+        fill_in "order_email", :with => "test@example.com"
+        click_on 'Continue'
       end
 
-      context "with payment required" do
-        before do
-          allow(order).to receive_messages :payment_required? => true
-        end
-
-        it "transitions to payment" do
-          expect(order).to receive(:set_shipments_cost)
-          order.next!
-          assert_state_changed(order, 'delivery', 'payment')
-          expect(order.state).to eq('payment')
-        end
-      end
-
-      context "without payment required" do
-        before do
-          allow(order).to receive_messages :payment_required? => false
-        end
-
-        it "transitions to complete" do
-          order.next!
-          expect(order.state).to eq("complete")
-        end
-      end
-
-      context "correctly determining payment required based on shipping information" do
-        let(:shipment) do
-          FactoryGirl.create(:shipment)
-        end
-
-        before do
-          # Needs to be set here because we're working with a persisted order object
-          order.email = "test@example.com"
-          order.save!
-          order.shipments << shipment
-        end
-
-        context "with a shipment that has a price" do
-          before do
-            shipment.shipping_rates.first.update_column(:cost, 10)
-            order.set_shipments_cost
-          end
-
-          it "transitions to payment" do
-            order.next!
-            expect(order.state).to eq("payment")
-          end
-        end
-
-        context "with a shipment that is free" do
-          before do
-            shipment.shipping_rates.first.update_column(:cost, 0)
-            order.set_shipments_cost
-          end
-
-          it "skips payment, transitions to complete" do
-            order.next!
-            expect(order.state).to eq("complete")
-          end
+      it "should not show 'Free Shipping' when there are no shipments" do
+        within("#checkout-summary") do
+          expect(page).to_not have_content('Free Shipping')
         end
       end
     end
 
-    context "from payment" do
-      before do
-        order.state = 'payment'
-      end
+    # Regression test for #4190
+    it "updates state_lock_version on form submission", js: true do
+      add_mug_to_cart
+      click_button "Checkout"
 
-      context "with confirmation required" do
-        before do
-          allow(order).to receive_messages :confirmation_required? => true
-        end
+      expect(find('input#order_state_lock_version', visible: false).value).to eq "0"
 
-        it "transitions to confirm" do
-          order.next!
-          assert_state_changed(order, 'payment', 'confirm')
-          expect(order.state).to eq("confirm")
-        end
-      end
+      fill_in "order_email", with: "test@example.com"
+      fill_in_address
+      click_button "Save and Continue"
 
-      context "without confirmation required" do
-        before do
-          order.email = "spree@example.com"
-          allow(order).to receive_messages :confirmation_required? => false
-          allow(order).to receive_messages :payment_required? => true
-          order.payments << FactoryGirl.create(:payment, state: payment_state, order: order)
-        end
-
-        context 'when there is at least one valid payment' do
-          let(:payment_state) { 'checkout' }
-
-          before do
-            expect(order).to receive(:process_payments!).once { true }
-          end
-
-          it "transitions to complete" do
-            order.next!
-            assert_state_changed(order, 'payment', 'complete')
-            expect(order.state).to eq('complete')
-          end
-        end
-
-        context 'when there is only an invalid payment' do
-          let(:payment_state) { 'failed' }
-
-          it "raises a StateMachine::InvalidTransition" do
-            expect {
-              order.next!
-            }.to raise_error(StateMachines::InvalidTransition, /#{Spree.t(:no_payment_found)}/)
-
-            expect(order.errors[:base]).to include(Spree.t(:no_payment_found))
-          end
-        end
-      end
-
-      # Regression test for #2028
-      context "when payment is not required" do
-        before do
-          allow(order).to receive_messages :payment_required? => false
-        end
-
-        it "does not call process payments" do
-          expect(order).not_to receive(:process_payments!)
-          order.next!
-          assert_state_changed(order, 'payment', 'complete')
-          expect(order.state).to eq("complete")
-        end
-      end
+      expect(find('input#order_state_lock_version', visible: false).value).to eq "1"
     end
   end
 
-  context "to complete" do
+  # Regression test for #2694 and #4117
+  context "doesn't allow bad credit card numbers" do
+    before(:each) do
+      order = OrderWalkthrough.up_to(:payment)
+      allow(order).to receive_messages confirmation_required?: true
+      allow(order).to receive_messages(:available_payment_methods => [ create(:credit_card_payment_method) ])
+
+      user = create(:user)
+      order.user = user
+      order.update!
+
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(current_order: order)
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(try_spree_current_user: user)
+    end
+
+    it "redirects to payment page", inaccessible: true, js: true do
+      visit spree.checkout_state_path(:payment)
+      click_button "Save and Continue"
+      choose "Credit Card"
+      fill_in "Card Number", with: '123'
+      fill_in "card_expiry", with: '04 / 20'
+      fill_in "Card Code", with: '123'
+      click_button "Save and Continue"
+      click_button "Place Order"
+      expect(page).to have_content("Bogus Gateway: Forced failure")
+      expect(page.current_url).to include("/checkout/payment")
+    end
+  end
+
+  #regression test for #3945
+  context "when Spree::Config[:always_include_confirm_step] is true" do
     before do
-      order.state = 'confirm'
-      order.save!
+      Spree::Config[:always_include_confirm_step] = true
     end
 
-    context "default credit card" do
-      before do
-        order.user = FactoryGirl.create(:user)
-        order.email = 'spree@example.org'
-        order.payments << FactoryGirl.create(:payment)
+    it "displays confirmation step", js: true do
+      add_mug_to_cart
+      click_button "Checkout"
 
-        # make sure we will actually capture a payment
-        allow(order).to receive_messages(payment_required?: true)
-        order.line_items << FactoryGirl.create(:line_item)
-        Spree::OrderUpdater.new(order).update
+      fill_in "order_email", with: "test@example.com"
+      click_on 'Continue'
+      fill_in_address
 
-        order.save!
-      end
+      click_button "Save and Continue"
+      click_button "Save and Continue"
+      click_button "Save and Continue"
 
-      it "makes the current credit card a user's default credit card" do
-        order.next!
-        expect(order.state).to eq 'complete'
-        expect(order.user.reload.default_credit_card.try(:id)).to eq(order.credit_cards.first.id)
-      end
-
-      it "does not assign a default credit card if temporary_credit_card is set" do
-        order.temporary_credit_card = true
-        order.next!
-        expect(order.user.reload.default_credit_card).to be_nil
-      end
+      continue_button = find("#checkout .btn-success")
+      expect(continue_button.value).to eq "Place Order"
     end
   end
 
-  context "subclassed order" do
-    # This causes another test above to fail, but fixing this test should make
-    #   the other test pass
-    class SubclassedOrder < Spree::Order
-      checkout_flow do
-        go_to_state :payment
-        go_to_state :complete
-      end
+  context "and likes to double click buttons" do
+    let!(:user) { create(:user) }
+
+    let!(:order) do
+      order = OrderWalkthrough.up_to(:payment)
+      allow(order).to receive_messages confirmation_required?: true
+
+      order.reload
+      order.user = user
+      order.update!
+      order
     end
 
-    skip "should only call default transitions once when checkout_flow is redefined" do
-      order = SubclassedOrder.new
-      allow(order).to receive_messages :payment_required? => true
-      expect(order).to receive(:process_payments!).once
-      order.state = "payment"
-      order.next!
-      assert_state_changed(order, 'payment', 'complete')
-      expect(order.state).to eq("complete")
+    before(:each) do
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(current_order: order)
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(try_spree_current_user: user)
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(skip_state_validation?: true)
+    end
+
+    it "prevents double clicking the payment button on checkout", js: true do
+      visit spree.checkout_state_path(:payment)
+
+      # prevent form submit to verify button is disabled
+      page.execute_script("$('#checkout_form_payment').submit(function(){return false;})")
+
+      expect(page).to_not have_selector('input.btn[disabled]')
+      click_button "Save and Continue"
+      expect(page).to have_selector('input.btn[disabled]')
+    end
+
+    it "prevents double clicking the confirm button on checkout", :js => true do
+      order.payments << create(:payment, amount: order.amount)
+      visit spree.checkout_state_path(:confirm)
+
+      # prevent form submit to verify button is disabled
+      page.execute_script("$('#checkout_form_confirm').submit(function(){return false;})")
+
+      expect(page).to_not have_selector('input.btn[disabled]')
+      click_button "Place Order"
+      expect(page).to have_selector('input.btn[disabled]')
     end
   end
 
-  context "re-define checkout flow" do
+  context "when several payment methods are available", js: true do
+    let(:credit_cart_payment) {create(:credit_card_payment_method) }
+    let(:check_payment) {create(:check_payment_method) }
+
+    after do
+      Capybara.ignore_hidden_elements = true
+    end
+
     before do
+      Capybara.ignore_hidden_elements = false
+      order = OrderWalkthrough.up_to(:payment)
+      allow(order).to receive_messages(available_payment_methods: [check_payment,credit_cart_payment])
+      order.user = create(:user)
+      order.update!
+
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(current_order: order)
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(try_spree_current_user: order.user)
+
+      visit spree.checkout_state_path(:payment)
+    end
+
+    it "the first payment method should be selected" do
+      payment_method_css = "#order_payments_attributes__payment_method_id_"
+      expect(find("#{payment_method_css}#{check_payment.id}")).to be_checked
+      expect(find("#{payment_method_css}#{credit_cart_payment.id}")).not_to be_checked
+    end
+
+    it "the fields for the other payment methods should be hidden" do
+      payment_method_css = "#payment_method_"
+      expect(find("#{payment_method_css}#{check_payment.id}")).to be_visible
+      expect(find("#{payment_method_css}#{credit_cart_payment.id}")).not_to be_visible
+    end
+  end
+
+  context "user has payment sources", js: true do
+    let(:bogus) { create(:credit_card_payment_method) }
+    let(:user) { create(:user) }
+
+    let!(:credit_card) do
+      create(:credit_card, user_id: user.id, payment_method: bogus, gateway_customer_profile_id: "BGS-WEFWF")
+    end
+
+    before do
+      order = OrderWalkthrough.up_to(:payment)
+      allow(order).to receive_messages(available_payment_methods: [bogus])
+
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(current_order: order)
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(try_spree_current_user: user)
+      allow_any_instance_of(Spree::OrdersController).to receive_messages(try_spree_current_user: user)
+
+      visit spree.checkout_state_path(:payment)
+    end
+
+    it "selects first source available and customer moves on" do
+      expect(find "#use_existing_card_yes").to be_checked
+
+      expect {
+        click_on "Save and Continue"
+      }.not_to change { Spree::CreditCard.count }
+
+      click_on "Place Order"
+      expect(current_path).to match(spree.order_path(Spree::Order.last))
+    end
+
+    it "allows user to enter a new source" do
+      choose "use_existing_card_no"
+
+      fill_in "Name on card", with: 'Spree Commerce'
+      fill_in "Card Number", with: '4111111111111111'
+      fill_in "card_expiry", with: '04 / 20'
+      fill_in "Card Code", with: '123'
+
+      expect {
+        click_on "Save and Continue"
+      }.to change { Spree::CreditCard.count }.by 1
+
+      click_on "Place Order"
+      expect(current_path).to match(spree.order_path(Spree::Order.last))
+    end
+  end
+
+  # regression for #2921
+  context "goes back from payment to add another item", js: true do
+    let!(:bag) { create(:product, name: "RoR Bag") }
+
+    it "transit nicely through checkout steps again" do
+      add_mug_to_cart
+      click_on "Checkout"
+      fill_in "order_email", with: "test@example.com"
+      click_on 'Continue'
+      fill_in_address
+      click_on "Save and Continue"
+      click_on "Save and Continue"
+      expect(current_path).to eql(spree.checkout_state_path("payment"))
+
+      visit spree.root_path
+      click_link bag.name
+      click_button "add-to-cart-button"
+
+      click_on "Checkout"
+      click_on "Save and Continue"
+      click_on "Save and Continue"
+      click_on "Save and Continue"
+
+      expect(current_path).to match(spree.order_path(Spree::Order.last))
+    end
+  end
+
+  context "from payment step customer goes back to cart", js: true do
+    before do
+      add_mug_to_cart
+      click_on "Checkout"
+      fill_in "order_email", with: "test@example.com"
+      click_on 'Continue'
+      fill_in_address
+      click_on "Save and Continue"
+      click_on "Save and Continue"
+      expect(current_path).to eql(spree.checkout_state_path("payment"))
+    end
+
+    context "and updates line item quantity and try to reach payment page" do
+      before do
+        visit spree.cart_path
+        within ".cart-item-quantity" do
+          fill_in first("input")["name"], with: 3
+        end
+
+        click_on "Update"
+      end
+
+      it "redirects user back to address step" do
+        visit spree.checkout_state_path("payment")
+        expect(current_path).to eql(spree.checkout_state_path("address"))
+      end
+
+      it "updates shipments properly through step address -> delivery transitions" do
+        visit spree.checkout_state_path("payment")
+        click_on "Save and Continue"
+        click_on "Save and Continue"
+
+        expect(Spree::InventoryUnit.count).to eq 3
+      end
+    end
+
+    context "and adds new product to cart and try to reach payment page" do
+      let!(:bag) { create(:product, name: "RoR Bag") }
+
+      before do
+        visit spree.root_path
+        click_link bag.name
+        click_button "add-to-cart-button"
+      end
+
+      it "redirects user back to address step" do
+        visit spree.checkout_state_path("payment")
+        expect(current_path).to eql(spree.checkout_state_path("address"))
+      end
+
+      it "updates shipments properly through step address -> delivery transitions" do
+        visit spree.checkout_state_path("payment")
+        click_on "Save and Continue"
+        click_on "Save and Continue"
+
+        expect(Spree::InventoryUnit.count).to eq 2
+      end
+    end
+  end
+
+  context "if coupon promotion, submits coupon along with payment", js: true do
+    let!(:promotion) { Spree::Promotion.create(name: "Huhuhu", code: "huhu") }
+    let!(:calculator) { Spree::Calculator::FlatPercentItemTotal.create(preferred_flat_percent: "10") }
+    let!(:action) { Spree::Promotion::Actions::CreateItemAdjustments.create(calculator: calculator) }
+
+    before do
+      promotion.actions << action
+
+      add_mug_to_cart
+      click_on "Checkout"
+
+      fill_in "order_email", with: "test@example.com"
+      click_on 'Continue'
+      fill_in_address
+      click_on "Save and Continue"
+
+      click_on "Save and Continue"
+      expect(current_path).to eql(spree.checkout_state_path("payment"))
+    end
+
+    it "makes sure payment reflects order total with discounts" do
+      fill_in "Coupon Code", with: promotion.code
+      click_on "Save and Continue"
+
+      expect(page).to have_content(promotion.name)
+      expect(Spree::Payment.first.amount.to_f).to eq Spree::Order.last.total.to_f
+    end
+
+    context "invalid coupon" do
+      it "doesnt create a payment record" do
+        fill_in "Coupon Code", with: 'invalid'
+        click_on "Save and Continue"
+
+        expect(Spree::Payment.count).to eq 0
+        expect(page).to have_content(Spree.t(:coupon_code_not_found))
+      end
+    end
+
+    context "doesn't fill in coupon code input" do
+      it "advances just fine" do
+        click_on "Save and Continue"
+        expect(current_path).to match(spree.order_path(Spree::Order.last))
+      end
+    end
+  end
+
+  context "order has only payment step" do
+    before do
+      create(:credit_card_payment_method)
       @old_checkout_flow = Spree::Order.checkout_flow
       Spree::Order.class_eval do
         checkout_flow do
           go_to_state :payment
-          go_to_state :complete
+          go_to_state :confirm
         end
       end
+
+      allow_any_instance_of(Spree::Order).to receive_messages email: "spree@commerce.com"
+
+      add_mug_to_cart
+      click_on "Checkout"
     end
 
     after do
       Spree::Order.checkout_flow(&@old_checkout_flow)
     end
 
-    it "should not keep old event transitions when checkout_flow is redefined" do
-      expect(Spree::Order.next_event_transitions).to eq([{:cart=>:payment}, {:payment=>:complete}])
-    end
+    it "goes right payment step and place order just fine" do
+      expect(current_path).to eq spree.checkout_state_path('payment')
 
-    it "should not keep old events when checkout_flow is redefined" do
-      state_machine = Spree::Order.state_machine
-      expect(state_machine.states.any? { |s| s.name == :address }).to be false
-      known_states = state_machine.events[:next].branches.map(&:known_states).flatten
-      expect(known_states).not_to include(:address)
-      expect(known_states).not_to include(:delivery)
-      expect(known_states).not_to include(:confirm)
+      choose "Credit Card"
+      fill_in "Name on card", with: 'Spree Commerce'
+      fill_in "Card Number", with: '4111111111111111'
+      fill_in "card_expiry", with: '04 / 20'
+      fill_in "Card Code", with: '123'
+      click_button "Save and Continue"
+
+      expect(current_path).to eq spree.checkout_state_path('confirm')
+      click_button "Place Order"
     end
   end
 
-  # Regression test for #3665
-  context "with only a complete step" do
+
+  context "save my address" do
     before do
-      @old_checkout_flow = Spree::Order.checkout_flow
-      Spree::Order.class_eval do
-        checkout_flow do
-          go_to_state :complete
-        end
-      end
+      stock_location.stock_items.update_all(count_on_hand: 1)
+      add_mug_to_cart
     end
 
-    after do
-      Spree::Order.checkout_flow(&@old_checkout_flow)
-    end
-
-    it "does not attempt to process payments" do
-      allow(order).to receive_message_chain(:line_items, :present?) { true }
-      allow(order).to receive(:ensure_line_items_are_in_stock) { true }
-      allow(order).to receive(:ensure_line_item_variants_are_not_discontinued) { true }
-      expect(order).not_to receive(:payment_required?)
-      expect(order).not_to receive(:process_payments!)
-      order.next!
-      assert_state_changed(order, 'cart', 'complete')
-    end
-
-  end
-
-  context "insert checkout step" do
-    before do
-      @old_checkout_flow = Spree::Order.checkout_flow
-      Spree::Order.class_eval do
-        insert_checkout_step :new_step, before: :address
-      end
-    end
-
-    after do
-      Spree::Order.checkout_flow(&@old_checkout_flow)
-    end
-
-    it "should maintain removed transitions" do
-      transition = Spree::Order.find_transition(:from => :delivery, :to => :confirm)
-      expect(transition).to be_nil
-    end
-
-    context "before" do
+    context 'as a guest' do
       before do
-        Spree::Order.class_eval do
-          insert_checkout_step :before_address, before: :address
-        end
+        Spree::Order.last.update_column(:email, "test@example.com")
+        click_button "Checkout"
       end
 
-      specify do
-        order = Spree::Order.new
-        expect(order.checkout_steps).to eq(%w(new_step before_address address delivery complete))
+      it 'should not be displayed' do
+        expect(page).to_not have_css("[data-hook=save_user_address]")
       end
     end
 
-    context "after" do
+    context 'as a User' do
       before do
-        Spree::Order.class_eval do
-          insert_checkout_step :after_address, after: :address
-        end
+        user = create(:user)
+        Spree::Order.last.update_column :user_id, user.id
+        allow_any_instance_of(Spree::OrdersController).to receive_messages(try_spree_current_user: user)
+        allow_any_instance_of(Spree::CheckoutController).to receive_messages(try_spree_current_user: user)
+        click_button "Checkout"
       end
 
-      specify do
-        order = Spree::Order.new
-        expect(order.checkout_steps).to eq(%w(new_step address after_address delivery complete))
+      it 'should be displayed' do
+        expect(page).to have_css("[data-hook=save_user_address]")
       end
     end
   end
 
-  context "remove checkout step" do
-    before do
-      @old_checkout_flow = Spree::Order.checkout_flow
-      Spree::Order.class_eval do
-        remove_checkout_step :address
-      end
+  context "when order is completed" do
+    let!(:user) { create(:user) }
+    let!(:order) { OrderWalkthrough.up_to(:payment) }
+
+    before(:each) do
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(current_order: order)
+      allow_any_instance_of(Spree::CheckoutController).to receive_messages(try_spree_current_user: user)
+      allow_any_instance_of(Spree::OrdersController).to receive_messages(try_spree_current_user: user)
+
+      visit spree.checkout_state_path(:payment)
+      click_button "Save and Continue"
     end
 
-    after do
-      Spree::Order.checkout_flow(&@old_checkout_flow)
+    it "displays a thank you message" do
+      expect(page).to have_content(Spree.t(:thank_you_for_your_order))
     end
 
-    it "should maintain removed transitions" do
-      transition = Spree::Order.find_transition(:from => :delivery, :to => :confirm)
-      expect(transition).to be_nil
-    end
-
-    specify do
-      order = Spree::Order.new
-      expect(order.checkout_steps).to eq(%w(delivery complete))
+    it "does not display a thank you message on that order future visits" do
+      visit spree.order_path(order)
+      expect(page).to_not have_content(Spree.t(:thank_you_for_your_order))
     end
   end
 
-  describe 'update_from_params' do
-    let(:permitted_params) { {} }
-    let(:params) { {} }
+  def fill_in_address
+    address = "order_bill_address_attributes"
+    fill_in "#{address}_firstname", with: "Ryan"
+    fill_in "#{address}_lastname", with: "Bigg"
+    fill_in "#{address}_address1", with: "143 Swan Street"
+    fill_in "#{address}_city", with: "Richmond"
+    select "United States of America", from: "#{address}_country_id"
+    select "Alabama", from: "#{address}_state_id"
+    fill_in "#{address}_zipcode", with: "12345"
+    fill_in "#{address}_phone", with: "(555) 555-5555"
+  end
 
-    it 'calls update_atributes without order params' do
-      expect(order).to receive(:update_attributes).with({})
-      order.update_from_params( params, permitted_params)
-    end
-
-    it 'runs the callbacks' do
-      expect(order).to receive(:run_callbacks).with(:updating_from_params)
-      order.update_from_params( params, permitted_params)
-    end
-
-    context "passing a credit card" do
-      let(:permitted_params) do
-        Spree::PermittedAttributes.checkout_attributes +
-          [payments_attributes: Spree::PermittedAttributes.payment_attributes]
-      end
-
-      let(:credit_card) { create(:credit_card, user_id: order.user_id) }
-
-      let(:params) do
-        ActionController::Parameters.new(
-          order: { payments_attributes: [{payment_method_id: 1}], existing_card: credit_card.id },
-          cvc_confirm: "737",
-          payment_source: {
-            "1" => { name: "Luis Braga",
-                     number: "4111 1111 1111 1111",
-                     expiry: "06 / 2016",
-                     verification_value: "737",
-                     cc_type: "" }
-          }
-        )
-      end
-
-      before { order.user_id = 3 }
-
-      it "sets confirmation value when its available via :cvc_confirm" do
-        allow(Spree::CreditCard).to receive_messages find: credit_card
-        expect(credit_card).to receive(:verification_value=)
-        order.update_from_params(params, permitted_params)
-      end
-
-      it "sets existing card as source for new payment" do
-        expect {
-          order.update_from_params(params, permitted_params)
-        }.to change { Spree::Payment.count }.by(1)
-
-        expect(Spree::Payment.last.source).to eq credit_card
-      end
-
-      it "sets request_env on payment" do
-        request_env = { "USER_AGENT" => "Firefox" }
-
-        expected_hash = { "payments_attributes" => [hash_including("request_env" => request_env)] }
-        expect(order).to receive(:update_attributes).with expected_hash
-
-        order.update_from_params(params, permitted_params, request_env)
-      end
-
-      it "dont let users mess with others users cards" do
-        credit_card.update_column :user_id, 5
-
-        expect {
-          order.update_from_params(params, permitted_params)
-        }.to raise_error(Spree.t(:invalid_credit_card))
-      end
-    end
-
-    context 'has params' do
-      let(:permitted_params) { [ :good_param ] }
-      let(:params) { ActionController::Parameters.new(order: {  bad_param: 'okay' } ) }
-
-      it 'does not let through unpermitted attributes' do
-        expect(order).to receive(:update_attributes).with({})
-        order.update_from_params(params, permitted_params)
-      end
-
-      context 'has existing_card param' do
-        let(:permitted_params) do
-          Spree::PermittedAttributes.checkout_attributes +
-            [payments_attributes: Spree::PermittedAttributes.payment_attributes]
-        end
-        let(:credit_card) { create(:credit_card, user_id: order.user_id) }
-        let(:params) do
-          ActionController::Parameters.new(
-            order: { payments_attributes: [{payment_method_id: 1}], existing_card: credit_card.id }
-          )
-        end
-
-        before do
-          Dummy::Application.config.action_controller.action_on_unpermitted_parameters = :raise
-          order.user_id = 3
-        end
-
-        after do
-          Dummy::Application.config.action_controller.action_on_unpermitted_parameters = :log
-        end
-
-        it 'does not attempt to permit existing_card' do
-          expect {
-            order.update_from_params(params, permitted_params)
-          }.not_to raise_error
-        end
-      end
-
-      context 'has allowed params' do
-        let(:params) { ActionController::Parameters.new(order: {  good_param: 'okay' } ) }
-
-        it 'accepts permitted attributes' do
-          expect(order).to receive(:update_attributes).with({"good_param" => 'okay'})
-          order.update_from_params(params, permitted_params)
-        end
-      end
-
-      context 'callbacks halt' do
-        before do
-          expect(order).to receive(:update_params_payment_source).and_return false
-        end
-        it 'does not let through unpermitted attributes' do
-          expect(order).not_to receive(:update_attributes).with({})
-          order.update_from_params(params, permitted_params)
-        end
-      end
-    end
+  def add_mug_to_cart
+    visit spree.root_path
+    click_link mug.name
+    click_button "add-to-cart-button"
   end
 end

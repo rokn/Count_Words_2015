@@ -1,70 +1,102 @@
+# TODO let friendly id take care of sanitizing the url
+require 'stringex'
+
 module Spree
-  class Promotion
-    module Rules
-      class Taxon < PromotionRule
-        has_many :promotion_rule_taxons, class_name: 'Spree::PromotionRuleTaxon', foreign_key: 'promotion_rule_id'
-        has_many :taxons, through: :promotion_rule_taxons, class_name: 'Spree::Taxon'
+  class Taxon < Spree::Base
+    extend FriendlyId
+    friendly_id :permalink, slug_column: :permalink, use: :slugged
+    before_create :set_permalink
 
-        MATCH_POLICIES = %w(any all)
-        preference :match_policy, default: MATCH_POLICIES.first
+    acts_as_nested_set dependent: :destroy
 
-        def applicable?(promotable)
-          promotable.is_a?(Spree::Order)
-        end
+    belongs_to :taxonomy, class_name: 'Spree::Taxonomy', inverse_of: :taxons
+    has_many :classifications, -> { order(:position) }, dependent: :delete_all, inverse_of: :taxon
+    has_many :products, through: :classifications
 
-        def eligible?(order, options = {})
-          if preferred_match_policy == 'all'
-            unless (taxons.to_a - taxons_in_order_including_parents(order)).empty?
-              eligibility_errors.add(:base, eligibility_error_message(:missing_taxon))
-            end
-          else
-            order_taxons = taxons_in_order_including_parents(order)
-            unless taxons.any?{ |taxon| order_taxons.include? taxon }
-              eligibility_errors.add(:base, eligibility_error_message(:no_matching_taxons))
-            end
-          end
+    has_many :prototype_taxons, class_name: 'Spree::PrototypeTaxon'
+    has_many :prototypes, through: :prototype_taxons, class_name: 'Spree::Prototype'
 
-          eligibility_errors.empty?
-        end
+    has_many :promotion_rule_taxons, class_name: 'Spree::PromotionRuleTaxon'
+    has_many :promotion_rules, through: :promotion_rule_taxons, class_name: 'Spree::PromotionRule'
 
-        def actionable?(line_item)
-          taxon_product_ids.include? line_item.variant.product_id
-        end
+    validates :name, presence: true
+    with_options length: { maximum: 255 }, allow_blank: true do
+      validates :meta_keywords
+      validates :meta_description
+      validates :meta_title
+    end
 
-        def taxon_ids_string
-          taxons.pluck(:id).join(',')
-        end
+    after_save :touch_ancestors_and_taxonomy
+    after_touch :touch_ancestors_and_taxonomy
 
-        def taxon_ids_string=(s)
-          ids = s.to_s.split(',').map(&:strip)
-          self.taxons = Spree::Taxon.find(ids)
-        end
+    has_attached_file :icon,
+      styles: { mini: '32x32>', normal: '128x128>' },
+      default_style: :mini,
+      url: '/spree/taxons/:id/:style/:basename.:extension',
+      path: ':rails_root/public/spree/taxons/:id/:style/:basename.:extension',
+      default_url: '/assets/default_taxon.png'
 
-        private
+    validates_attachment :icon,
+      content_type: { content_type: ["image/jpg", "image/jpeg", "image/png", "image/gif"] }
 
-        # All taxons in an order
-        def order_taxons(order)
-          Spree::Taxon.joins(products: {variants_including_master: :line_items}).where(spree_line_items: {order_id: order.id}).uniq
-        end
+    # indicate which filters should be used for a taxon
+    # this method should be customized to your own site
+    def applicable_filters
+      fs = []
+      # fs << ProductFilters.taxons_below(self)
+      ## unless it's a root taxon? left open for demo purposes
 
-        # ids of taxons rules and taxons rules children
-        def taxons_including_children_ids
-          taxons.inject([]){ |ids,taxon| ids += taxon.self_and_descendants.ids }
-        end
+      fs << Spree::Core::ProductFilters.price_filter if Spree::Core::ProductFilters.respond_to?(:price_filter)
+      fs << Spree::Core::ProductFilters.brand_filter if Spree::Core::ProductFilters.respond_to?(:brand_filter)
+      fs
+    end
 
-        # taxons order vs taxons rules and taxons rules children
-        def order_taxons_in_taxons_and_children(order)
-          order_taxons(order).where(id: taxons_including_children_ids)
-        end
-
-        def taxons_in_order_including_parents(order)
-          order_taxons_in_taxons_and_children(order).inject([]){ |taxons, taxon| taxons << taxon.self_and_ancestors }.flatten.uniq
-        end
-
-        def taxon_product_ids
-          Spree::Product.joins(:taxons).where(spree_taxons: {id: taxons.pluck(:id)}).pluck(:id).uniq
-        end
+    # Return meta_title if set otherwise generates from root name and/or taxon name
+    def seo_title
+      unless meta_title.blank?
+        meta_title
+      else
+        root? ? name : "#{root.name} - #{name}"
       end
+    end
+
+    # Creates permalink base for friendly_id
+    def set_permalink
+      if parent.present?
+        self.permalink = [parent.permalink, (permalink.blank? ? name.to_url : permalink.split('/').last)].join('/')
+      else
+        self.permalink = name.to_url if permalink.blank?
+      end
+    end
+
+    def active_products
+      products.active
+    end
+
+    def pretty_name
+      ancestor_chain = self.ancestors.inject("") do |name, ancestor|
+        name += "#{ancestor.name} -> "
+      end
+      ancestor_chain + "#{name}"
+    end
+
+    # awesome_nested_set sorts by :lft and :rgt. This call re-inserts the child
+    # node so that its resulting position matches the observable 0-indexed position.
+    # ** Note ** no :position column needed - a_n_s doesn't handle the reordering if
+    #  you bring your own :order_column.
+    #
+    #  See #3390 for background.
+    def child_index=(idx)
+      move_to_child_with_index(parent, idx.to_i) unless self.new_record?
+    end
+
+    private
+
+    def touch_ancestors_and_taxonomy
+      # Touches all ancestors at once to avoid recursive taxonomy touch, and reduce queries.
+      self.class.where(id: ancestors.pluck(:id)).update_all(updated_at: Time.current)
+      # Have taxonomy touch happen in #touch_ancestors_and_taxonomy rather than association option in order for imports to override.
+      taxonomy.try!(:touch)
     end
   end
 end

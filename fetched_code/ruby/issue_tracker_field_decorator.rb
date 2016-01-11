@@ -1,11 +1,23 @@
-describe IssueTrackerFieldDecorator do
-  describe "#label" do
-    it 'return the label of field_info by default' do
-      expect(IssueTrackerFieldDecorator.new(:foo, label: 'hello').label).to eq 'hello'
-    end
+class IssueTrackerFieldDecorator < Draper::Decorator
+  def initialize(field, field_info)
+    @object = field
+    @field_info = field_info
+  end
+  attr_reader :object, :field_info
 
-    it 'return the key of field if no label define' do
-      expect(IssueTrackerFieldDecorator.new(:foo, {}).label).to eq 'foo'
-    end
+  alias_method :key, :object
+
+  def label
+    field_info[:label] || object.to_s.titleize
+  end
+
+  def input(form, issue_tracker)
+    form.send(input_field, key.to_s,
+      placeholder: field_info[:placeholder],
+      value:       issue_tracker.options[key.to_s])
+  end
+
+  private def input_field
+    object == :password ? :password_field : :text_field
   end
 end

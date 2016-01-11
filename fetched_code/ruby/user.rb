@@ -1,612 +1,1104 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+require_dependency 'email'
+require_dependency 'email_token'
+require_dependency 'trust_level'
+require_dependency 'pbkdf2'
+require_dependency 'discourse'
+require_dependency 'post_destroyer'
+require_dependency 'user_name_suggester'
+require_dependency 'pretty_text'
+require_dependency 'url_helper'
+require_dependency 'letter_avatar'
+require_dependency 'promotion'
 
 class User < ActiveRecord::Base
-  include Encryptor::Private
-  include Connecting
-  include Querying
-  include SocialActions
+  include Roleable
+  include HasCustomFields
 
-  apply_simple_captcha :message => I18n.t('simple_captcha.message.failed'), :add_to_base => true
+  has_many :posts
+  has_many :notifications, dependent: :destroy
+  has_many :topic_users, dependent: :destroy
+  has_many :category_users, dependent: :destroy
+  has_many :topics
+  has_many :user_open_ids, dependent: :destroy
+  has_many :user_actions, dependent: :destroy
+  has_many :post_actions, dependent: :destroy
+  has_many :user_badges, -> { where('user_badges.badge_id IN (SELECT id FROM badges WHERE enabled)') }, dependent: :destroy
+  has_many :badges, through: :user_badges
+  has_many :email_logs, dependent: :delete_all
+  has_many :post_timings
+  has_many :topic_allowed_users, dependent: :destroy
+  has_many :topics_allowed, through: :topic_allowed_users, source: :topic
+  has_many :email_tokens, dependent: :destroy
+  has_many :views
+  has_many :user_visits, dependent: :destroy
+  has_many :invites, dependent: :destroy
+  has_many :topic_links, dependent: :destroy
+  has_many :uploads
+  has_many :warnings
+  has_many :user_archived_messages, dependent: :destroy
 
-  scope :logged_in_since, ->(time) { where('last_seen > ?', time) }
-  scope :monthly_actives, ->(time = Time.now) { logged_in_since(time - 1.month) }
-  scope :daily_actives, ->(time = Time.now) { logged_in_since(time - 1.day) }
-  scope :yearly_actives, ->(time = Time.now) { logged_in_since(time - 1.year) }
-  scope :halfyear_actives, ->(time = Time.now) { logged_in_since(time - 6.month) }
-  scope :active, -> { joins(:person).where(people: {closed_account: false}).where.not(username: nil) }
 
-  devise :token_authenticatable, :database_authenticatable, :registerable,
-         :recoverable, :rememberable, :trackable, :validatable,
-         :lockable, :lastseenable, :lock_strategy => :none, :unlock_strategy => :none
+  has_one :user_avatar, dependent: :destroy
+  has_one :facebook_user_info, dependent: :destroy
+  has_one :twitter_user_info, dependent: :destroy
+  has_one :github_user_info, dependent: :destroy
+  has_one :google_user_info, dependent: :destroy
+  has_one :oauth2_user_info, dependent: :destroy
+  has_one :user_stat, dependent: :destroy
+  has_one :user_profile, dependent: :destroy, inverse_of: :user
+  has_one :single_sign_on_record, dependent: :destroy
+  belongs_to :approved_by, class_name: 'User'
+  belongs_to :primary_group, class_name: 'Group'
 
-  before_validation :strip_and_downcase_username
-  before_validation :set_current_language, :on => :create
-  before_validation :set_default_color_theme, on: :create
+  has_many :group_users, dependent: :destroy
+  has_many :groups, through: :group_users
+  has_many :secure_categories, through: :groups, source: :categories
 
-  validates :username, :presence => true, :uniqueness => true
-  validates_format_of :username, :with => /\A[A-Za-z0-9_]+\z/
-  validates_length_of :username, :maximum => 32
-  validates_exclusion_of :username, :in => AppConfig.settings.username_blacklist
-  validates_inclusion_of :language, :in => AVAILABLE_LANGUAGE_CODES
-  validates :color_theme, inclusion: {in: AVAILABLE_COLOR_THEME_CODES}, allow_blank: true
-  validates_format_of :unconfirmed_email, :with  => Devise.email_regexp, :allow_blank => true
+  has_many :muted_user_records, class_name: 'MutedUser'
+  has_many :muted_users, through: :muted_user_records
 
-  validates_presence_of :person, :unless => proc {|user| user.invitation_token.present?}
-  validates_associated :person
-  validate :no_person_with_same_username
+  has_one :user_search_data, dependent: :destroy
+  has_one :api_key, dependent: :destroy
 
-  serialize :hidden_shareables, Hash
+  belongs_to :uploaded_avatar, class_name: 'Upload'
 
-  has_one :person, :foreign_key => :owner_id
-  has_one :profile, through: :person
+  delegate :last_sent_email_address, :to => :email_logs
 
-  delegate :guid, :public_key, :posts, :photos, :owns?, :image_url,
-           :diaspora_handle, :name, :atom_url, :profile_url, :profile, :url,
-           :first_name, :last_name, :gender, :participations, to: :person
-  delegate :id, :guid, to: :person, prefix: true
+  before_validation :strip_downcase_email
 
-  has_many :invitations_from_me, :class_name => 'Invitation', :foreign_key => :sender_id
-  has_many :invitations_to_me, :class_name => 'Invitation', :foreign_key => :recipient_id
-  has_many :aspects, -> { order('order_id ASC') }
+  validates_presence_of :username
+  validate :username_validator
+  validates :email, presence: true, uniqueness: true
+  validates :email, email: true, if: :email_changed?
+  validate :password_validator
+  validates :name, user_full_name: true, if: :name_changed?
+  validates :ip_address, allowed_ip_address: {on: :create, message: :signup_not_allowed}
 
-  belongs_to  :auto_follow_back_aspect, :class_name => 'Aspect'
-  belongs_to :invited_by, :class_name => 'User'
+  after_initialize :add_trust_level
 
-  has_many :aspect_memberships, :through => :aspects
+  before_create :set_default_user_preferences
 
-  has_many :contacts
-  has_many :contact_people, :through => :contacts, :source => :person
+  after_create :create_email_token
+  after_create :create_user_stat
+  after_create :create_user_profile
+  after_create :ensure_in_trust_level_group
+  after_create :automatic_group_membership
+  after_create :set_default_categories_preferences
 
-  has_many :services
+  before_save :update_username_lower
+  before_save :ensure_password_is_hashed
 
-  has_many :user_preferences
+  after_save :update_tracked_topics
+  after_save :clear_global_notice_if_needed
+  after_save :refresh_avatar
+  after_save :badge_grant
+  after_save :expire_old_email_tokens
 
-  has_many :tag_followings
-  has_many :followed_tags, -> { order('tags.name') }, :through => :tag_followings, :source => :tag
+  before_destroy do
+    # These tables don't have primary keys, so destroying them with activerecord is tricky:
+    PostTiming.delete_all(user_id: self.id)
+    TopicViewItem.delete_all(user_id: self.id)
+  end
 
-  has_many :blocks
-  has_many :ignored_people, :through => :blocks, :source => :person
+  # Whether we need to be sending a system message after creation
+  attr_accessor :send_welcome_message
 
-  has_many :conversation_visibilities, through: :person
-  has_many :conversations, through: :conversation_visibilities
+  # This is just used to pass some information into the serializer
+  attr_accessor :notification_channel_position
 
-  has_many :notifications, :foreign_key => :recipient_id
+  # set to true to optimize creation and save for imports
+  attr_accessor :import_mode
 
-  has_many :reports
+  # excluding fake users like the system user or anonymous users
+  scope :real, -> { where('id > 0').where('NOT EXISTS(
+                     SELECT 1
+                     FROM user_custom_fields ucf
+                     WHERE
+                       ucf.user_id = users.id AND
+                       ucf.name = ? AND
+                       ucf.value::int > 0
+                  )', 'master_id') }
 
-  before_save :guard_unconfirmed_email,
-              :save_person!
+  scope :staff, -> { where("admin OR moderator") }
 
-  def self.all_sharing_with_person(person)
-    User.joins(:contacts).where(:contacts => {:person_id => person.id})
+  # TODO-PERF: There is no indexes on any of these
+  # and NotifyMailingListSubscribers does a select-all-and-loop
+  # may want to create an index on (active, blocked, suspended_till, mailing_list_mode)?
+  scope :blocked, -> { where(blocked: true) }
+  scope :not_blocked, -> { where(blocked: false) }
+  scope :suspended, -> { where('suspended_till IS NOT NULL AND suspended_till > ?', Time.zone.now) }
+  scope :not_suspended, -> { where('suspended_till IS NULL OR suspended_till <= ?', Time.zone.now) }
+  scope :activated, -> { where(active: true) }
+
+  module NewTopicDuration
+    ALWAYS = -1
+    LAST_VISIT = -2
+  end
+
+  def self.max_password_length
+    200
+  end
+
+  def self.username_length
+    SiteSetting.min_username_length.to_i..SiteSetting.max_username_length.to_i
+  end
+
+  def self.username_available?(username)
+    lower = username.downcase
+    User.where(username_lower: lower).blank? && !SiteSetting.reserved_usernames.split("|").include?(username)
+  end
+
+  def effective_locale
+    if SiteSetting.allow_user_locale && self.locale.present?
+      self.locale
+    else
+      SiteSetting.default_locale
+    end
+  end
+
+  EMAIL = %r{([^@]+)@([^\.]+)}
+
+  def self.new_from_params(params)
+    user = User.new
+    user.name = params[:name]
+    user.email = params[:email]
+    user.password = params[:password]
+    user.username = params[:username]
+    user
+  end
+
+  def self.suggest_name(email)
+    return "" if email.blank?
+    name = email.split(/[@\+]/)[0].gsub(".", " ")
+    name.titleize
+  end
+
+  def self.find_by_username_or_email(username_or_email)
+    if username_or_email.include?('@')
+      find_by_email(username_or_email)
+    else
+      find_by_username(username_or_email)
+    end
+  end
+
+  def self.find_by_email(email)
+    find_by(email: Email.downcase(email))
+  end
+
+  def self.find_by_username(username)
+    find_by(username_lower: username.downcase)
+  end
+
+
+  def enqueue_welcome_message(message_type)
+    return unless SiteSetting.send_welcome_message?
+    Jobs.enqueue(:send_system_message, user_id: id, message_type: message_type)
+  end
+
+  def change_username(new_username, actor=nil)
+    UsernameChanger.change(self, new_username, actor)
+  end
+
+  def created_topic_count
+    stat = user_stat || create_user_stat
+    stat.topic_count
+  end
+
+  alias_method :topic_count, :created_topic_count
+
+  # tricky, we need our bus to be subscribed from the right spot
+  def sync_notification_channel_position
+    @unread_notifications_by_type = nil
+    self.notification_channel_position = MessageBus.last_id("/notification/#{id}")
+  end
+
+  def invited_by
+    used_invite = invites.where("redeemed_at is not null").includes(:invited_by).first
+    used_invite.try(:invited_by)
+  end
+
+  # Approve this user
+  def approve(approved_by, send_mail=true)
+    self.approved = true
+
+    if approved_by.is_a?(Fixnum)
+      self.approved_by_id = approved_by
+    else
+      self.approved_by = approved_by
+    end
+
+    self.approved_at = Time.now
+
+    send_approval_email if save and send_mail
+  end
+
+  def self.email_hash(email)
+    Digest::MD5.hexdigest(email.strip.downcase)
+  end
+
+  def email_hash
+    User.email_hash(email)
+  end
+
+  def reload
+    @unread_notifications = nil
+    @unread_total_notifications = nil
+    @unread_pms = nil
+    super
+  end
+
+  def unread_private_messages
+    @unread_pms ||=
+      begin
+        # perf critical, much more efficient than AR
+        sql = "
+           SELECT COUNT(*) FROM notifications n
+           LEFT JOIN topics t ON n.topic_id = t.id
+           WHERE
+            t.deleted_at IS NULL AND
+            n.notification_type = :type AND
+            n.user_id = :user_id AND
+            NOT read"
+
+        User.exec_sql(sql, user_id: id,
+                           type:  Notification.types[:private_message])
+            .getvalue(0,0).to_i
+      end
   end
 
   def unread_notifications
-    notifications.where(:unread => true)
+    @unread_notifications ||=
+      begin
+        # perf critical, much more efficient than AR
+        sql = "
+           SELECT COUNT(*) FROM notifications n
+           LEFT JOIN topics t ON n.topic_id = t.id
+           WHERE
+            t.deleted_at IS NULL AND
+            n.notification_type <> :pm AND
+            n.user_id = :user_id AND
+            NOT read AND
+            n.id > :seen_notification_id"
+
+        User.exec_sql(sql, user_id: id,
+                           seen_notification_id: seen_notification_id,
+                           pm:  Notification.types[:private_message])
+            .getvalue(0,0).to_i
+      end
   end
 
-  def unread_message_count
-    ConversationVisibility.where(person_id: self.person_id).sum(:unread)
+  def total_unread_notifications
+    @unread_total_notifications ||= notifications.where("read = false").count
   end
 
-  #@deprecated
-  def ugly_accept_invitation_code
-    begin
-      self.invitations_to_me.first.sender.invitation_code
-    rescue Exception => e
-      nil
+  def saw_notification_id(notification_id)
+    User.where("id = ? and seen_notification_id < ?", id, notification_id)
+        .update_all ["seen_notification_id = ?", notification_id]
+
+    # mark all "badge granted" and "invite accepted" notifications read
+    Notification.where('user_id = ? AND NOT read AND notification_type IN (?)', id, [Notification.types[:granted_badge], Notification.types[:invitee_accepted]])
+        .update_all ["read = ?", true]
+  end
+
+  def publish_notifications_state
+    # publish last notification json with the message so we
+    # can apply an update
+    notification = notifications.visible.order('notifications.id desc').first
+    json = NotificationSerializer.new(notification).as_json if notification
+
+    MessageBus.publish("/notification/#{id}",
+                       {unread_notifications: unread_notifications,
+                        unread_private_messages: unread_private_messages,
+                        total_unread_notifications: total_unread_notifications,
+                        last_notification: json
+                       },
+                       user_ids: [id] # only publish the notification to this user
+    )
+  end
+
+  # A selection of people to autocomplete on @mention
+  def self.mentionable_usernames
+    User.select(:username).order('last_posted_at desc').limit(20)
+  end
+
+  def password=(password)
+    # special case for passwordless accounts
+    unless password.blank?
+      @raw_password = password
+      self.auth_token = nil
     end
   end
 
-  def process_invite_acceptence(invite)
-    self.invited_by = invite.user
-    invite.use!
+  def password
+    '' # so that validator doesn't complain that a password attribute doesn't exist
   end
 
-
-  def invitation_code
-    InvitationCode.find_or_create_by(user_id: self.id)
+  # Indicate that this is NOT a passwordless account for the purposes of validation
+  def password_required!
+    @password_required = true
   end
 
-  def hidden_shareables
-    self[:hidden_shareables] ||= {}
+  def password_required?
+    !!@password_required
   end
 
-  def add_hidden_shareable(key, share_id, opts={})
-    if self.hidden_shareables.has_key?(key)
-      self.hidden_shareables[key] << share_id
+  def has_password?
+    password_hash.present?
+  end
+
+  def password_validator
+    PasswordValidator.new(attributes: :password).validate_each(self, :password, @raw_password)
+  end
+
+  def confirm_password?(password)
+    return false unless password_hash && salt
+    self.password_hash == hash_password(password, salt)
+  end
+
+  def first_day_user?
+    !staff? &&
+    trust_level < TrustLevel[2] &&
+    created_at >= 24.hours.ago
+  end
+
+  def new_user?
+    (created_at >= 24.hours.ago || trust_level == TrustLevel[0]) &&
+      trust_level < TrustLevel[2] &&
+      !staff?
+  end
+
+  def seen_before?
+    last_seen_at.present?
+  end
+
+  def create_visit_record!(date, opts={})
+    user_stat.update_column(:days_visited, user_stat.days_visited + 1)
+    user_visits.create!(visited_at: date, posts_read: opts[:posts_read] || 0, mobile: opts[:mobile] || false)
+  end
+
+  def visit_record_for(date)
+    user_visits.find_by(visited_at: date)
+  end
+
+  def update_visit_record!(date)
+    create_visit_record!(date) unless visit_record_for(date)
+  end
+
+  def update_posts_read!(num_posts, opts={})
+    now = opts[:at] || Time.zone.now
+    _retry = opts[:retry] || false
+
+    if user_visit = visit_record_for(now.to_date)
+      user_visit.posts_read += num_posts
+      user_visit.mobile = true if opts[:mobile]
+      user_visit.save
+      user_visit
     else
-      self.hidden_shareables[key] = [share_id]
-    end
-    self.save unless opts[:batch]
-    self.hidden_shareables
-  end
-
-  def remove_hidden_shareable(key, share_id)
-    if self.hidden_shareables.has_key?(key)
-      self.hidden_shareables[key].delete(share_id)
-    end
-  end
-
-  def is_shareable_hidden?(shareable)
-    shareable_type = shareable.class.base_class.name
-    if self.hidden_shareables.has_key?(shareable_type)
-      self.hidden_shareables[shareable_type].include?(shareable.id.to_s)
-    else
-      false
-    end
-  end
-
-  def toggle_hidden_shareable(share)
-    share_id = share.id.to_s
-    key = share.class.base_class.to_s
-    if self.hidden_shareables.has_key?(key) && self.hidden_shareables[key].include?(share_id)
-      self.remove_hidden_shareable(key, share_id)
-      self.save
-      false
-    else
-      self.add_hidden_shareable(key, share_id)
-      self.save
-      true
-    end
-  end
-
-  def has_hidden_shareables_of_type?(t = Post)
-    share_type = t.base_class.to_s
-    self.hidden_shareables[share_type].present?
-  end
-
-  # Copy the method provided by Devise to be able to call it later
-  # from a Sidekiq job
-  alias_method :send_reset_password_instructions!, :send_reset_password_instructions
-
-  def send_reset_password_instructions
-    Workers::ResetPassword.perform_async(self.id)
-  end
-
-  def update_user_preferences(pref_hash)
-    if self.disable_mail
-      UserPreference::VALID_EMAIL_TYPES.each{|x| self.user_preferences.find_or_create_by(email_type: x)}
-      self.disable_mail = false
-      self.save
-    end
-
-    pref_hash.keys.each do |key|
-      if pref_hash[key] == 'true'
-        self.user_preferences.find_or_create_by(email_type: key)
-      else
-        block = self.user_preferences.where(:email_type => key).first
-        if block
-          block.destroy
+      begin
+        create_visit_record!(now.to_date, posts_read: num_posts, mobile: opts.fetch(:mobile, false))
+      rescue ActiveRecord::RecordNotUnique
+        if !_retry
+          update_posts_read!(num_posts, opts.merge( retry: true ))
+        else
+          raise
         end
       end
     end
   end
 
-  def strip_and_downcase_username
-    if username.present?
-      username.strip!
-      username.downcase!
+  def update_ip_address!(new_ip_address)
+    unless ip_address == new_ip_address || new_ip_address.blank?
+      update_column(:ip_address, new_ip_address)
     end
   end
 
-  def disable_getting_started
-    self.update_attribute(:getting_started, false) if self.getting_started?
+  def update_last_seen!(now=Time.zone.now)
+    now_date = now.to_date
+    # Only update last seen once every minute
+    redis_key = "user:#{id}:#{now_date}"
+    return unless $redis.setnx(redis_key, "1")
+
+    $redis.expire(redis_key, SiteSetting.active_user_rate_limit_secs)
+    update_previous_visit(now)
+    # using update_column to avoid the AR transaction
+    update_column(:last_seen_at, now)
   end
 
-  def set_current_language
-    self.language = I18n.locale.to_s if self.language.blank?
+  def self.gravatar_template(email)
+    email_hash = self.email_hash(email)
+    "//www.gravatar.com/avatar/#{email_hash}.png?s={size}&r=pg&d=identicon"
   end
 
-  def set_default_color_theme
-    self.color_theme ||= AppConfig.settings.default_color_theme
+  # Don't pass this up to the client - it's meant for server side use
+  # This is used in
+  #   - self oneboxes in open graph data
+  #   - emails
+  def small_avatar_url
+    avatar_template_url.gsub("{size}", "45")
   end
 
-  # This override allows a user to enter either their email address or their username into the username field.
-  # @return [User] The user that matches the username/email condition.
-  # @return [nil] if no user matches that condition.
-  def self.find_for_database_authentication(conditions={})
-    conditions = conditions.dup
-    conditions[:username] = conditions[:username].downcase
-    if conditions[:username] =~ /^([\w\.%\+\-]+)@([\w\-]+\.)+([\w]{2,})$/i # email regex
-      conditions[:email] = conditions.delete(:username)
-    end
-    where(conditions).first
+  def avatar_template_url
+    UrlHelper.schemaless UrlHelper.absolute avatar_template
   end
 
-  def confirm_email(token)
-    return false if token.blank? || token != confirm_email_token
-    self.email = unconfirmed_email
-    save
-  end
-
-  ######### Aspects ######################
-  def add_contact_to_aspect(contact, aspect)
-    return true if AspectMembership.exists?(:contact_id => contact.id, :aspect_id => aspect.id)
-    contact.aspect_memberships.create!(:aspect => aspect)
-  end
-
-  ######## Posting ########
-  def build_post(class_name, opts={})
-    opts[:author] = self.person
-    opts[:diaspora_handle] = opts[:author].diaspora_handle
-
-    model_class = class_name.to_s.camelize.constantize
-    model_class.diaspora_initialize(opts)
-  end
-
-  def dispatch_post(post, opts={})
-    logger.info "user:#{id} dispatching #{post.class}:#{post.guid}"
-    Postzord::Dispatcher.defer_build_and_post(self, post, opts)
-  end
-
-  def update_post(post, post_hash={})
-    if self.owns? post
-      post.update_attributes(post_hash)
-      self.dispatch_post(post)
-    end
-  end
-
-  def notify_if_mentioned(post)
-    return unless self.contact_for(post.author) && post.respond_to?(:mentions?)
-
-    post.notify_person(self.person) if post.mentions? self.person
-  end
-
-  def add_to_streams(post, aspects_to_insert)
-    aspects_to_insert.each do |aspect|
-      aspect << post
-    end
-  end
-
-  def aspects_from_ids(aspect_ids)
-    if aspect_ids == "all" || aspect_ids == :all
-      self.aspects
-    else
-      aspects.where(:id => aspect_ids).to_a
-    end
-  end
-
-  def salmon(post)
-    Salmon::EncryptedSlap.create_by_user_and_activity(self, post.to_diaspora_xml)
-  end
-
-  # Check whether the user has liked a post.
-  # @param [Post] post
-  def liked?(target)
-    if target.likes.loaded?
-      if self.like_for(target)
-        return true
-      else
-        return false
-      end
-    else
-      Like.exists?(:author_id => self.person.id, :target_type => target.class.base_class.to_s, :target_id => target.id)
-    end
-  end
-
-  # Get the user's like of a post, if there is one.
-  # @param [Post] post
-  # @return [Like]
-  def like_for(target)
-    if target.likes.loaded?
-      return target.likes.detect{ |like| like.author_id == self.person.id }
-    else
-      return Like.where(:author_id => self.person.id, :target_type => target.class.base_class.to_s, :target_id => target.id).first
-    end
-  end
-
-  ######### Data export ##################
-  mount_uploader :export, ExportedUser
-
-  def queue_export
-    update exporting: true
-    Workers::ExportUser.perform_async(id)
-  end
-
-  def perform_export!
-    export = Tempfile.new([username, '.json.gz'], encoding: 'ascii-8bit')
-    export.write(compressed_export) && export.close
-    if export.present?
-      update exporting: false, export: export, exported_at: Time.zone.now
-    else
-      update exporting: false
-    end
-  end
-
-  def compressed_export
-    ActiveSupport::Gzip.compress Diaspora::Exporter.new(self).execute
-  end
-
-  ######### Photos export ##################
-  mount_uploader :exported_photos_file, ExportedPhotos
-
-  def queue_export_photos
-    update exporting_photos: true
-    Workers::ExportPhotos.perform_async(id)
-  end
-
-  def perform_export_photos!
-    temp_zip = Tempfile.new([username, '_photos.zip'])
-    begin
-      Zip::OutputStream.open(temp_zip.path) do |zos|
-        photos.each do |photo|
-          begin
-            photo_file = photo.unprocessed_image.file
-            if photo_file
-              photo_data = photo_file.read
-              zos.put_next_entry(photo.remote_photo_name)
-              zos.print(photo_data)
-            else
-              logger.info "Export photos error: No file for #{photo.remote_photo_name} not found"
-            end
-          rescue Errno::ENOENT
-            logger.info "Export photos error: #{photo.unprocessed_image.file.path} not found"
-          end
+  def self.default_template(username)
+    if SiteSetting.default_avatars.present?
+      split_avatars = SiteSetting.default_avatars.split("\n")
+      if split_avatars.present?
+        hash = username.each_char.reduce(0) do |result, char|
+          [((result << 5) - result) + char.ord].pack('L').unpack('l').first
         end
+
+        split_avatars[hash.abs % split_avatars.size]
       end
-    ensure
-      temp_zip.close
-    end
-
-    begin
-      update exported_photos_file: temp_zip, exported_photos_at: Time.zone.now if temp_zip.present?
-    ensure
-      restore_attributes if invalid? || temp_zip.present?
-      update exporting_photos: false
-    end
-  end
-
-  ######### Mailer #######################
-  def mail(job, *args)
-    pref = job.to_s.gsub('Workers::Mail::', '').underscore
-    if(self.disable_mail == false && !self.user_preferences.exists?(:email_type => pref))
-      job.perform_async(*args)
-    end
-  end
-
-  def send_confirm_email
-    return if unconfirmed_email.blank?
-    Workers::Mail::ConfirmEmail.perform_async(id)
-  end
-
-  ######### Posts and Such ###############
-  def retract(target, opts={})
-    if target.respond_to?(:relayable?) && target.relayable?
-      retraction = RelayableRetraction.build(self, target)
-    elsif target.is_a? Post
-      retraction = SignedRetraction.build(self, target)
     else
-      retraction = Retraction.for(target)
+      system_avatar_template(username)
     end
-
-    if target.is_a?(Post)
-      opts[:additional_subscribers] = target.resharers
-      opts[:services] = services
-    end
-
-    mailman = Postzord::Dispatcher.build(self, retraction, opts)
-    mailman.post
-
-    retraction.perform(self)
-
-    retraction
   end
 
-  ########### Profile ######################
-  def update_profile(params)
-    if photo = params.delete(:photo)
-      photo.update_attributes(:pending => false) if photo.pending
-      params[:image_url] = photo.url(:thumb_large)
-      params[:image_url_medium] = photo.url(:thumb_medium)
-      params[:image_url_small] = photo.url(:thumb_small)
-    end
+  def self.avatar_template(username, uploaded_avatar_id)
+    username ||= ""
+    return default_template(username) if !uploaded_avatar_id
+    hostname = RailsMultisite::ConnectionManagement.current_hostname
+    UserAvatar.local_avatar_template(hostname, username.downcase, uploaded_avatar_id)
+  end
 
-    params.stringify_keys!
-    params.slice!(*(Profile.column_names+['tag_string', 'date']))
-    if self.profile.update_attributes(params)
-      deliver_profile_update
-      true
+  def self.system_avatar_template(username)
+    # TODO it may be worth caching this in a distributed cache, should be benched
+    if SiteSetting.external_system_avatars_enabled
+      url = SiteSetting.external_system_avatars_url.dup
+      url.gsub! "{color}", letter_avatar_color(username.downcase)
+      url.gsub! "{username}", username
+      url.gsub! "{first_letter}", username[0].downcase
+      url.gsub! "{hostname}", Discourse.current_hostname
+      url
     else
-      false
+      "#{Discourse.base_uri}/letter_avatar/#{username.downcase}/{size}/#{LetterAvatar.version}.png"
     end
   end
 
-  def update_profile_with_omniauth( user_info )
-    update_profile( self.profile.from_omniauth_hash( user_info ) )
+  def self.letter_avatar_color(username)
+    username ||= ""
+    color = LetterAvatar::COLORS[Digest::MD5.hexdigest(username)[0...15].to_i(16) % LetterAvatar::COLORS.length]
+    color.map { |c| c.to_s(16).rjust(2, '0') }.join
   end
 
-  def deliver_profile_update
-    Postzord::Dispatcher.build(self, profile).post
+  def avatar_template
+    self.class.avatar_template(username, uploaded_avatar_id)
   end
 
-  def basic_profile_present?
-    tag_followings.any? || profile[:image_url]
+  # The following count methods are somewhat slow - definitely don't use them in a loop.
+  # They might need to be denormalized
+  def like_count
+    UserAction.where(user_id: id, action_type: UserAction::WAS_LIKED).count
   end
 
-  ###Helpers############
-  def self.build(opts = {})
-    u = User.new(opts.except(:person, :id))
-    u.setup(opts)
-    u
+  def like_given_count
+    UserAction.where(user_id: id, action_type: UserAction::LIKE).count
   end
 
-  def setup(opts)
-    self.username = opts[:username]
-    self.email = opts[:email]
-    self.language = opts[:language]
-    self.language ||= I18n.locale.to_s
-    self.color_theme = opts[:color_theme]
-    self.color_theme ||= AppConfig.settings.default_color_theme
-    self.valid?
-    errors = self.errors
-    errors.delete :person
-    return if errors.size > 0
-    self.set_person(Person.new((opts[:person] || {}).except(:id)))
-    self.generate_keys
-    self
+  def post_count
+    stat = user_stat || create_user_stat
+    stat.post_count
   end
 
-  def set_person(person)
-    person.url = AppConfig.pod_uri.to_s
-    person.diaspora_handle = "#{self.username}#{User.diaspora_id_host}"
-    self.person = person
+  def flags_given_count
+    PostAction.where(user_id: id, post_action_type_id: PostActionType.flag_types.values).count
   end
 
-  def self.diaspora_id_host
-    "@#{AppConfig.bare_pod_uri}"
+  def warnings_received_count
+    warnings.count
   end
 
-  def seed_aspects
-    self.aspects.create(:name => I18n.t('aspects.seed.family'))
-    self.aspects.create(:name => I18n.t('aspects.seed.friends'))
-    self.aspects.create(:name => I18n.t('aspects.seed.work'))
-    aq = self.aspects.create(:name => I18n.t('aspects.seed.acquaintances'))
-
-    if AppConfig.settings.autofollow_on_join?
-      default_account = Person.find_or_fetch_by_identifier(AppConfig.settings.autofollow_on_join_user)
-      self.share_with(default_account, aq) if default_account
-    end
-    aq
+  def flags_received_count
+    posts.includes(:post_actions).where('post_actions.post_action_type_id' => PostActionType.flag_types.values).count
   end
 
-  def send_welcome_message
-    return unless AppConfig.settings.welcome_message.enabled? && AppConfig.admins.account?
-    sender_username = AppConfig.admins.account.get
-    sender = User.find_by(username: sender_username)
-    conversation = sender.build_conversation(
-      participant_ids: [sender.person.id, person.id],
-      subject:         AppConfig.settings.welcome_message.subject.get,
-      message:         {text: AppConfig.settings.welcome_message.text.get % {username: username}})
-    if conversation.save
-      Postzord::Dispatcher.build(sender, conversation).post
+  def private_topics_count
+    topics_allowed.where(archetype: Archetype.private_message).count
+  end
+
+  def posted_too_much_in_topic?(topic_id)
+
+    # Does not apply to staff, non-new members or your own topics
+    return false if staff? ||
+                    (trust_level != TrustLevel[0]) ||
+                    Topic.where(id: topic_id, user_id: id).exists?
+
+    last_action_in_topic = UserAction.last_action_in_topic(id, topic_id)
+    since_reply = Post.where(user_id: id, topic_id: topic_id)
+    since_reply = since_reply.where('id > ?', last_action_in_topic) if last_action_in_topic
+
+    (since_reply.count >= SiteSetting.newuser_max_replies_per_topic)
+  end
+
+  def delete_all_posts!(guardian)
+    raise Discourse::InvalidAccess unless guardian.can_delete_all_posts? self
+
+    QueuedPost.where(user_id: id).delete_all
+
+    posts.order("post_number desc").each do |p|
+      PostDestroyer.new(guardian.user, p).destroy
     end
   end
 
-  def encryption_key
-    OpenSSL::PKey::RSA.new(serialized_private_key)
+  def suspended?
+    suspended_till && suspended_till > DateTime.now
   end
 
+  def suspend_record
+    UserHistory.for(self, :suspend_user).order('id DESC').first
+  end
+
+  def suspend_reason
+    suspend_record.try(:details) if suspended?
+  end
+
+  # Use this helper to determine if the user has a particular trust level.
+  # Takes into account admin, etc.
+  def has_trust_level?(level)
+    raise "Invalid trust level #{level}" unless TrustLevel.valid?(level)
+    admin? || moderator? || staged? || TrustLevel.compare(trust_level, level)
+  end
+
+  # a touch faster than automatic
   def admin?
-    Role.is_admin?(self.person)
+    admin
   end
 
-  def moderator?
-    Role.moderator?(person)
+  def guardian
+    Guardian.new(self)
   end
 
-  def podmin_account?
-    username == AppConfig.admins.account
+  def username_format_validator
+    UsernameValidator.perform_validation(self, 'username')
   end
 
-  def mine?(target)
-    if target.present? && target.respond_to?(:user_id)
-      return self.id == target.user_id
-    end
-
-    false
+  def email_confirmed?
+    email_tokens.where(email: email, confirmed: true).present? || email_tokens.empty?
   end
 
-
-  def guard_unconfirmed_email
-    self.unconfirmed_email = nil if unconfirmed_email.blank? || unconfirmed_email == email
-
-    if unconfirmed_email_changed?
-      self.confirm_email_token = unconfirmed_email ? SecureRandom.hex(15) : nil
-    end
-  end
-
-  # Generate public/private keys for User and associated Person
-  def generate_keys
-    key_size = (Rails.env == 'test' ? 512 : 4096)
-
-    self.serialized_private_key = OpenSSL::PKey::RSA::generate(key_size).to_s if self.serialized_private_key.blank?
-
-    if self.person && self.person.serialized_public_key.blank?
-      self.person.serialized_public_key = OpenSSL::PKey::RSA.new(self.serialized_private_key).public_key.to_s
-    end
-  end
-
-  # Sometimes we access the person in a strange way and need to do this
-  # @note we should make this method depricated.
-  #
-  # @return [Person]
-  def save_person!
-    self.person.save if self.person && self.person.changed?
-    self.person
-  end
-
-
-  def no_person_with_same_username
-    diaspora_id = "#{self.username}#{User.diaspora_id_host}"
-    if self.username_changed? && Person.exists?(:diaspora_handle => diaspora_id)
-      errors[:base] << 'That username has already been taken'
-    end
-  end
-
-  def close_account!
-    self.person.lock_access!
-    self.lock_access!
-    AccountDeletion.create(:person => self.person)
-  end
-
-  def closed_account?
-    self.person.closed_account
-  end
-
-  def clear_account!
-    clearable_fields.each do |field|
-      self[field] = nil
-    end
-    [:getting_started,
-     :show_community_spotlight_in_stream].each do |field|
-      self[field] = false
-    end
-    self[:disable_mail] = true
-    self[:strip_exif] = true
-    self[:email] = "deletedaccount_#{self[:id]}@example.org"
-
-    random_password = SecureRandom.hex(20)
-    self.password = random_password
-    self.password_confirmation = random_password
-    self.save(:validate => false)
-  end
-
-  def sign_up
-    if AppConfig.settings.captcha.enable?
-      save_with_captcha
+  def activate
+    email_token = self.email_tokens.active.first
+    if email_token
+      EmailToken.confirm(email_token.token)
     else
+      self.active = true
       save
     end
   end
 
-  def flag_for_removal(remove_after)
-    # flag inactive user for future removal
-    if AppConfig.settings.maintenance.remove_old_users.enable?
-      self.remove_after = remove_after
-      self.save
+  def deactivate
+    self.active = false
+    save
+  end
+
+  def change_trust_level!(level, opts=nil)
+    Promotion.new(self).change_trust_level!(level, opts)
+  end
+
+  def treat_as_new_topic_start_date
+    duration = new_topic_duration_minutes || SiteSetting.default_other_new_topic_duration_minutes.to_i
+    times = [case duration
+      when User::NewTopicDuration::ALWAYS
+        created_at
+      when User::NewTopicDuration::LAST_VISIT
+        previous_visit_at || user_stat.new_since
+      else
+        duration.minutes.ago
+    end, user_stat.new_since, Time.at(SiteSetting.min_new_topics_time).to_datetime]
+
+    times.max
+  end
+
+  def readable_name
+    return "#{name} (#{username})" if name.present? && name != username
+    username
+  end
+
+  def badge_count
+    user_badges.select('distinct badge_id').count
+  end
+
+  def featured_user_badges
+    user_badges
+        .joins(:badge)
+        .order("CASE WHEN badges.id = (SELECT MAX(ub2.badge_id) FROM user_badges ub2
+                              WHERE ub2.badge_id IN (#{Badge.trust_level_badge_ids.join(",")}) AND
+                                    ub2.user_id = #{self.id}) THEN 1 ELSE 0 END DESC")
+        .order('badges.badge_type_id ASC, badges.grant_count ASC')
+        .includes(:user, :granted_by, badge: :badge_type)
+        .where("user_badges.id in (select min(u2.id)
+                  from user_badges u2 where u2.user_id = ? group by u2.badge_id)", id)
+        .limit(3)
+  end
+
+  def self.count_by_signup_date(start_date, end_date)
+    where('created_at >= ? and created_at <= ?', start_date, end_date).group('date(created_at)').order('date(created_at)').count
+  end
+
+
+  def secure_category_ids
+    cats = self.admin? ? Category.where(read_restricted: true) : secure_categories.references(:categories)
+    cats.pluck('categories.id').sort
+  end
+
+  def topic_create_allowed_category_ids
+    Category.topic_create_allowed(self.id).select(:id)
+  end
+
+
+  # Flag all posts from a user as spam
+  def flag_linked_posts_as_spam
+    admin = Discourse.system_user
+
+    disagreed_flag_post_ids = PostAction.where(post_action_type_id: PostActionType.types[:spam]).where.not(disagreed_at: nil).pluck(:post_id)
+    topic_links.includes(:post).where.not(post_id: disagreed_flag_post_ids).each do |tl|
+      begin
+        PostAction.act(admin, tl.post, PostActionType.types[:spam], message: I18n.t('flag_reason.spam_hosts'))
+      rescue PostAction::AlreadyActed
+        # If the user has already acted, just ignore it
+      end
     end
   end
 
-  def after_database_authentication
-    # remove any possible remove_after timestamp flag set by maintenance.remove_old_users
-    unless self.remove_after.nil?
-      self.remove_after = nil
-      self.save
+  def has_uploaded_avatar
+    uploaded_avatar.present?
+  end
+
+  def generate_api_key(created_by)
+    if api_key.present?
+      api_key.regenerate!(created_by)
+      api_key
+    else
+      ApiKey.create(user: self, key: SecureRandom.hex(32), created_by: created_by)
+    end
+  end
+
+  def revoke_api_key
+    ApiKey.where(user_id: self.id).delete_all
+  end
+
+  def find_email
+    last_sent_email_address || email
+  end
+
+  def tl3_requirements
+    @lq ||= TrustLevel3Requirements.new(self)
+  end
+
+  def on_tl3_grace_period?
+    UserHistory.for(self, :auto_trust_level_change)
+      .where('created_at >= ?', SiteSetting.tl3_promotion_min_duration.to_i.days.ago)
+      .where(previous_value: TrustLevel[2].to_s)
+      .where(new_value: TrustLevel[3].to_s)
+      .exists?
+  end
+
+  def should_be_redirected_to_top
+    redirected_to_top.present?
+  end
+
+  def redirected_to_top
+    # redirect is enabled
+    return unless SiteSetting.redirect_users_to_top_page
+    # top must be in the top_menu
+    return unless SiteSetting.top_menu =~ /(^|\|)top(\||$)/i
+    # not enough topics
+    return unless period = SiteSetting.min_redirected_to_top_period
+
+    if !seen_before? || (trust_level == 0 && !redirected_to_top_yet?)
+      update_last_redirected_to_top!
+      return {
+        reason: I18n.t('redirected_to_top_reasons.new_user'),
+        period: period
+      }
+    elsif last_seen_at < 1.month.ago
+      update_last_redirected_to_top!
+      return {
+        reason: I18n.t('redirected_to_top_reasons.not_seen_in_a_month'),
+        period: period
+      }
+    end
+
+    # don't redirect to top
+    nil
+  end
+
+  def redirected_to_top_yet?
+    last_redirected_to_top_at.present?
+  end
+
+  def update_last_redirected_to_top!
+    key = "user:#{id}:update_last_redirected_to_top"
+    delay = SiteSetting.active_user_rate_limit_secs
+
+    # only update last_redirected_to_top_at once every minute
+    return unless $redis.setnx(key, "1")
+    $redis.expire(key, delay)
+
+    # delay the update
+    Jobs.enqueue_in(delay / 2, :update_top_redirection, user_id: self.id, redirected_at: Time.zone.now)
+  end
+
+  def refresh_avatar
+    return if @import_mode
+
+    avatar = user_avatar || create_user_avatar
+
+    if SiteSetting.automatically_download_gravatars? && !avatar.last_gravatar_download_attempt
+      Jobs.enqueue(:update_gravatar, user_id: self.id, avatar_id: avatar.id)
+    end
+
+    # mark all the user's quoted posts as "needing a rebake"
+    Post.rebake_all_quoted_posts(self.id) if self.uploaded_avatar_id_changed?
+  end
+
+  def first_post_created_at
+    user_stat.try(:first_post_created_at)
+  end
+
+  def associated_accounts
+    result = []
+
+    result << "Twitter(#{twitter_user_info.screen_name})" if twitter_user_info
+    result << "Facebook(#{facebook_user_info.username})"  if facebook_user_info
+    result << "Google(#{google_user_info.email})"         if google_user_info
+    result << "Github(#{github_user_info.screen_name})"   if github_user_info
+
+    user_open_ids.each do |oid|
+      result << "OpenID #{oid.url[0..20]}...(#{oid.email})"
+    end
+
+    result.empty? ? I18n.t("user.no_accounts_associated") : result.join(", ")
+  end
+
+  def user_fields
+    return @user_fields if @user_fields
+    user_field_ids = UserField.pluck(:id)
+    if user_field_ids.present?
+      @user_fields = {}
+      user_field_ids.each do |fid|
+        @user_fields[fid.to_s] = custom_fields["user_field_#{fid}"]
+      end
+    end
+    @user_fields
+  end
+
+  def title=(val)
+    write_attribute(:title, val)
+    if !new_record? && user_profile
+      user_profile.update_column(:badge_granted_title, false)
+    end
+  end
+
+  def number_of_deleted_posts
+    Post.with_deleted
+        .where(user_id: self.id)
+        .where.not(deleted_at: nil)
+        .count
+  end
+
+  def number_of_flagged_posts
+    Post.with_deleted
+        .where(user_id: self.id)
+        .where(id: PostAction.where(post_action_type_id: PostActionType.notify_flag_type_ids)
+                             .where(disagreed_at: nil)
+                             .select(:post_id))
+        .count
+  end
+
+  def number_of_flags_given
+    PostAction.where(user_id: self.id)
+              .where(disagreed_at: nil)
+              .where(post_action_type_id: PostActionType.notify_flag_type_ids)
+              .count
+  end
+
+  def number_of_warnings
+    self.warnings.count
+  end
+
+  def number_of_suspensions
+    UserHistory.for(self, :suspend_user).count
+  end
+
+  def create_user_profile
+    UserProfile.create(user_id: id)
+  end
+
+  def anonymous?
+    SiteSetting.allow_anonymous_posting &&
+      trust_level >= 1 &&
+      custom_fields["master_id"].to_i > 0
+  end
+
+  protected
+
+  def badge_grant
+    BadgeGranter.queue_badge_grant(Badge::Trigger::UserChange, user: self)
+  end
+
+  def expire_old_email_tokens
+    if password_hash_changed? && !id_changed?
+      email_tokens.where('not expired').update_all(expired: true)
+    end
+  end
+
+  def update_tracked_topics
+    return unless auto_track_topics_after_msecs_changed?
+    TrackedTopicsUpdater.new(id, auto_track_topics_after_msecs).call
+  end
+
+  def clear_global_notice_if_needed
+    if admin && SiteSetting.has_login_hint
+      SiteSetting.has_login_hint = false
+      SiteSetting.global_notice = ""
+    end
+  end
+
+  def ensure_in_trust_level_group
+    Group.user_trust_level_change!(id, trust_level)
+  end
+
+  def automatic_group_membership
+    Group.where(automatic: false)
+         .where("LENGTH(COALESCE(automatic_membership_email_domains, '')) > 0")
+         .each do |group|
+      domains = group.automatic_membership_email_domains.gsub('.', '\.')
+      if self.email =~ Regexp.new("@(#{domains})$", true)
+        group.add(self) rescue ActiveRecord::RecordNotUnique
+      end
+    end
+  end
+
+  def create_user_stat
+    stat = UserStat.new(new_since: Time.now)
+    stat.user_id = id
+    stat.save!
+  end
+
+  def create_email_token
+    email_tokens.create(email: email)
+  end
+
+  def ensure_password_is_hashed
+    if @raw_password
+      self.salt = SecureRandom.hex(16)
+      self.password_hash = hash_password(@raw_password, salt)
+    end
+  end
+
+  def hash_password(password, salt)
+    raise "password is too long" if password.size > User.max_password_length
+    Pbkdf2.hash_password(password, salt, Rails.configuration.pbkdf2_iterations, Rails.configuration.pbkdf2_algorithm)
+  end
+
+  def add_trust_level
+    # there is a possibility we did not load trust level column, skip it
+    return unless has_attribute? :trust_level
+    self.trust_level ||= SiteSetting.default_trust_level
+  end
+
+  def update_username_lower
+    self.username_lower = username.downcase
+  end
+
+  def strip_downcase_email
+    if self.email
+      self.email = self.email.strip
+      self.email = self.email.downcase
+    end
+  end
+
+  def username_validator
+    username_format_validator || begin
+      lower = username.downcase
+      existing = User.find_by(username_lower: lower)
+      if username_changed? && existing && existing.id != self.id
+        errors.add(:username, I18n.t(:'user.username.unique'))
+      end
+    end
+  end
+
+  def send_approval_email
+    if SiteSetting.must_approve_users
+      Jobs.enqueue(:user_email,
+        type: :signup_after_approval,
+        user_id: id,
+        email_token: email_tokens.first.token
+      )
+    end
+  end
+
+  def set_default_user_preferences
+    set_default_email_digest_frequency
+    set_default_email_private_messages
+    set_default_email_direct
+    set_default_email_mailing_list_mode
+    set_default_email_always
+
+    set_default_other_new_topic_duration_minutes
+    set_default_other_auto_track_topics_after_msecs
+    set_default_other_external_links_in_new_tab
+    set_default_other_enable_quoting
+    set_default_other_dynamic_favicon
+    set_default_other_disable_jump_reply
+    set_default_other_edit_history_public
+
+    set_default_topics_automatic_unpin
+
+    # needed, otherwise the callback chain is broken...
+    true
+  end
+
+  def set_default_categories_preferences
+    values = []
+
+    %w{watching tracking muted}.each do |s|
+      category_ids = SiteSetting.send("default_categories_#{s}").split("|")
+      category_ids.each do |category_id|
+        values << "(#{self.id}, #{category_id}, #{CategoryUser.notification_levels[s.to_sym]})"
+      end
+    end
+
+    if values.present?
+      exec_sql("INSERT INTO category_users (user_id, category_id, notification_level) VALUES #{values.join(",")}")
+    end
+  end
+
+  # Delete unactivated accounts (without verified email) that are over a week old
+  def self.purge_unactivated
+    to_destroy = User.where(active: false)
+                     .joins('INNER JOIN user_stats AS us ON us.user_id = users.id')
+                     .where("created_at < ?", SiteSetting.purge_unactivated_users_grace_period_days.days.ago)
+                     .where('NOT admin AND NOT moderator')
+                     .limit(100)
+
+    destroyer = UserDestroyer.new(Discourse.system_user)
+    to_destroy.each do |u|
+      begin
+        destroyer.destroy(u, context: I18n.t(:purge_reason))
+      rescue Discourse::InvalidAccess, UserDestroyer::PostsExistError
+        # if for some reason the user can't be deleted, continue on to the next one
+      end
     end
   end
 
   private
 
-  def clearable_fields
-    self.attributes.keys - ["id", "username", "encrypted_password",
-                            "created_at", "updated_at", "locked_at",
-                            "serialized_private_key", "getting_started",
-                            "disable_mail", "show_community_spotlight_in_stream",
-                            "strip_exif", "email", "remove_after",
-                            "export", "exporting", "exported_at",
-                            "exported_photos_file", "exporting_photos", "exported_photos_at"]
+  def previous_visit_at_update_required?(timestamp)
+    seen_before? && (last_seen_at < (timestamp - SiteSetting.previous_visit_timeout_hours.hours))
   end
+
+  def update_previous_visit(timestamp)
+    update_visit_record!(timestamp.to_date)
+    if previous_visit_at_update_required?(timestamp)
+      update_column(:previous_visit_at, last_seen_at)
+    end
+  end
+
+  def set_default_email_digest_frequency
+    if has_attribute?(:email_digests)
+      if SiteSetting.default_email_digest_frequency.to_i <= 0
+        self.email_digests = false
+      else
+        self.email_digests = true
+        self.digest_after_days ||= SiteSetting.default_email_digest_frequency.to_i if has_attribute?(:digest_after_days)
+      end
+    end
+  end
+
+  def set_default_email_mailing_list_mode
+    self.mailing_list_mode = SiteSetting.default_email_mailing_list_mode if has_attribute?(:mailing_list_mode)
+  end
+
+  %w{private_messages direct always}.each do |s|
+    define_method("set_default_email_#{s}") do
+      self.send("email_#{s}=", SiteSetting.send("default_email_#{s}")) if has_attribute?("email_#{s}")
+    end
+  end
+
+  %w{new_topic_duration_minutes auto_track_topics_after_msecs}.each do |s|
+    define_method("set_default_other_#{s}") do
+      self.send("#{s}=", SiteSetting.send("default_other_#{s}").to_i) if has_attribute?(s)
+    end
+  end
+
+  %w{external_links_in_new_tab enable_quoting dynamic_favicon disable_jump_reply edit_history_public}.each do |s|
+    define_method("set_default_other_#{s}") do
+      self.send("#{s}=", SiteSetting.send("default_other_#{s}")) if has_attribute?(s)
+    end
+  end
+
+  def set_default_topics_automatic_unpin
+    self.automatically_unpin_topics = SiteSetting.default_topics_automatic_unpin
+  end
+
 end
+
+# == Schema Information
+#
+# Table name: users
+#
+#  id                            :integer          not null, primary key
+#  username                      :string(60)       not null
+#  created_at                    :datetime         not null
+#  updated_at                    :datetime         not null
+#  name                          :string(255)
+#  seen_notification_id          :integer          default(0), not null
+#  last_posted_at                :datetime
+#  email                         :string(513)      not null
+#  password_hash                 :string(64)
+#  salt                          :string(32)
+#  active                        :boolean          default(FALSE), not null
+#  username_lower                :string(60)       not null
+#  auth_token                    :string(32)
+#  last_seen_at                  :datetime
+#  admin                         :boolean          default(FALSE), not null
+#  last_emailed_at               :datetime
+#  email_digests                 :boolean          not null
+#  trust_level                   :integer          not null
+#  email_private_messages        :boolean          default(TRUE)
+#  email_direct                  :boolean          default(TRUE), not null
+#  approved                      :boolean          default(FALSE), not null
+#  approved_by_id                :integer
+#  approved_at                   :datetime
+#  digest_after_days             :integer
+#  previous_visit_at             :datetime
+#  suspended_at                  :datetime
+#  suspended_till                :datetime
+#  date_of_birth                 :date
+#  auto_track_topics_after_msecs :integer
+#  views                         :integer          default(0), not null
+#  flag_level                    :integer          default(0), not null
+#  ip_address                    :inet
+#  new_topic_duration_minutes    :integer
+#  external_links_in_new_tab     :boolean          not null
+#  enable_quoting                :boolean          default(TRUE), not null
+#  moderator                     :boolean          default(FALSE)
+#  blocked                       :boolean          default(FALSE)
+#  dynamic_favicon               :boolean          default(FALSE), not null
+#  title                         :string(255)
+#  uploaded_avatar_id            :integer
+#  email_always                  :boolean          default(FALSE), not null
+#  mailing_list_mode             :boolean          default(FALSE), not null
+#  primary_group_id              :integer
+#  locale                        :string(10)
+#  registration_ip_address       :inet
+#  last_redirected_to_top_at     :datetime
+#  disable_jump_reply            :boolean          default(FALSE), not null
+#  edit_history_public           :boolean          default(FALSE), not null
+#  trust_level_locked            :boolean          default(FALSE), not null
+#  staged                        :boolean          default(FALSE), not null
+#
+# Indexes
+#
+#  idx_users_admin                (id)
+#  idx_users_moderator            (id)
+#  index_users_on_auth_token      (auth_token)
+#  index_users_on_last_posted_at  (last_posted_at)
+#  index_users_on_last_seen_at    (last_seen_at)
+#  index_users_on_username        (username) UNIQUE
+#  index_users_on_username_lower  (username_lower) UNIQUE
+#

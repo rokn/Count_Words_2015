@@ -1,102 +1,86 @@
 require 'spec_helper'
 
-module Spree
-  module PromotionHandler
-    describe Cart, :type => :model do
-      let(:line_item) { create(:line_item) }
-      let(:order) { line_item.order }
+describe "Cart", type: :feature, inaccessible: true do
+  it "shows cart icon on non-cart pages" do
+    visit spree.root_path
+    expect(page).to have_selector("li#link-to-cart a", visible: true)
+  end
 
-      let(:promotion) { Promotion.create(name: "At line items") }
-      let(:calculator) { Calculator::FlatPercentItemTotal.new(preferred_flat_percent: 10) }
+  it "prevents double clicking the remove button on cart", js: true do
+    @product = create(:product, name: "RoR Mug")
 
-      subject { Cart.new(order, line_item) }
+    visit spree.root_path
+    click_link "RoR Mug"
+    click_button "add-to-cart-button"
 
-      context "activates in LineItem level" do
-        let!(:action) { Promotion::Actions::CreateItemAdjustments.create(promotion: promotion, calculator: calculator) }
-        let(:adjustable) { line_item }
+    # prevent form submit to verify button is disabled
+    page.execute_script("$('#update-cart').submit(function(){return false;})")
 
-        shared_context "creates the adjustment" do
-          it "creates the adjustment" do
-            expect {
-              subject.activate
-            }.to change { adjustable.adjustments.count }.by(1)
-          end
-        end
+    expect(page).not_to have_selector('button#update-button[disabled]')
+    page.find(:css, '.delete span').click
+    expect(page).to have_selector('button#update-button[disabled]')
+  end
 
-        context "promotion with no rules" do
-          include_context "creates the adjustment"
-        end
-
-        context "promotion includes item involved" do
-          let!(:rule) { Promotion::Rules::Product.create(products: [line_item.product], promotion: promotion) }
-
-          include_context "creates the adjustment"
-        end
-
-        context "promotion has item total rule" do
-          let(:shirt) { create(:product) }
-          let!(:rule) { Promotion::Rules::ItemTotal.create(preferred_operator_min: 'gt', preferred_amount_min: 50, preferred_operator_max: 'lt', preferred_amount_max: 150, promotion: promotion) }
-
-          before do
-            # Makes the order eligible for this promotion
-            order.item_total = 100
-            order.save
-          end
-
-          include_context "creates the adjustment"
-        end
-      end
-
-      context "activates in Order level" do
-        let!(:action) { Promotion::Actions::CreateAdjustment.create(promotion: promotion, calculator: calculator) }
-        let(:adjustable) { order }
-
-        shared_context "creates the adjustment" do
-          it "creates the adjustment" do
-            expect {
-              subject.activate
-            }.to change { adjustable.adjustments.count }.by(1)
-          end
-        end
-
-        context "promotion with no rules" do
-          before do
-            # Gives the calculator something to discount
-            order.item_total = 10
-            order.save
-          end
-
-          include_context "creates the adjustment"
-        end
-
-        context "promotion has item total rule" do
-          let(:shirt) { create(:product) }
-          let!(:rule) { Promotion::Rules::ItemTotal.create(preferred_operator_min: 'gt', preferred_amount_min: 50, preferred_operator_max: 'lt', preferred_amount_max: 150, promotion: promotion) }
-
-          before do
-            # Makes the order eligible for this promotion
-            order.item_total = 100
-            order.save
-          end
-
-          include_context "creates the adjustment"
-        end
-      end
-
-      context "activates promotions associated with the order" do
-        let(:promo) { create :promotion_with_item_adjustment, adjustment_rate: 5, code: 'promo' }
-        let(:adjustable) { line_item }
-
-        before do
-          order.promotions << promo
-        end
-
-        it "creates the adjustment" do
-          expect {
-            subject.activate
-          }.to change { adjustable.adjustments.count }.by(1)
-        end
-      end
+  # Regression test for #2006
+  it "does not error out with a 404 when GET'ing to /orders/populate" do
+    visit '/orders/populate'
+    within(".alert-error") do
+      expect(page).to have_content(Spree.t(:populate_get_error))
     end
+  end
+
+  it 'allows you to remove an item from the cart', :js => true do
+    create(:product, name: "RoR Mug")
+    visit spree.root_path
+    click_link "RoR Mug"
+    click_button "add-to-cart-button"
+    line_item = Spree::LineItem.first!
+    within("#line_items") do
+      click_link "delete_line_item_#{line_item.id}"
+    end
+
+    expect(page).to_not have_content("Line items quantity must be an integer")
+    expect(page).to_not have_content("RoR Mug")
+    expect(page).to have_content("Your cart is empty")
+
+    within "#link-to-cart" do
+      expect(page).to have_content("Empty")
+    end
+  end
+
+  it 'allows you to empty the cart', js: true do
+    create(:product, name: "RoR Mug")
+    visit spree.root_path
+    click_link "RoR Mug"
+    click_button "add-to-cart-button"
+
+    expect(page).to have_content("RoR Mug")
+    click_on "Empty Cart"
+    expect(page).to have_content("Your cart is empty")
+
+    within "#link-to-cart" do
+      expect(page).to have_content("Empty")
+    end
+  end
+
+  # regression for #2276
+  context "product contains variants but no option values" do
+    let(:variant) { create(:variant) }
+    let(:product) { variant.product }
+
+    before { variant.option_values.destroy_all }
+
+    it "still adds product to cart", inaccessible: true do
+      visit spree.product_path(product)
+      click_button "add-to-cart-button"
+
+      visit spree.cart_path
+      expect(page).to have_content(product.name)
+    end
+  end
+
+  it "should have a surrounding element with data-hook='cart_container'" do
+    visit spree.cart_path
+    expect(page).to have_selector("div[data-hook='cart_container']")
   end
 end

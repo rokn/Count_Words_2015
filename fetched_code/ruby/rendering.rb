@@ -1,132 +1,131 @@
-require 'active_support/core_ext/string/filters'
+require 'active_support/concern'
+require 'active_support/core_ext/class/attribute'
+require 'action_view'
+require 'action_view/view_paths'
+require 'set'
 
-module ActionController
+module AbstractController
+  class DoubleRenderError < Error
+    DEFAULT_MESSAGE = "Render and/or redirect were called multiple times in this action. Please note that you may only call render OR redirect, and at most once per action. Also note that neither redirect nor render terminate execution of the action, so if you want to exit an action after redirecting, you need to do something like \"redirect_to(...) and return\"."
+
+    def initialize(message = nil)
+      super(message || DEFAULT_MESSAGE)
+    end
+  end
+
   module Rendering
     extend ActiveSupport::Concern
+    include ActionView::ViewPaths
 
-    RENDER_FORMATS_IN_PRIORITY = [:body, :text, :plain, :html]
-
-    module ClassMethods
-      # Documentation at ActionController::Renderer#render
-      delegate :render, to: :renderer
-
-      # Returns a renderer instance (inherited from ActionController::Renderer)
-      # for the controller.
-      attr_reader :renderer
-
-      def setup_renderer! # :nodoc:
-        @renderer = Renderer.for(self)
-      end
-
-      def inherited(klass)
-        klass.setup_renderer!
-        super
-      end
-    end
-
-    # Before processing, set the request formats in current controller formats.
-    def process_action(*) #:nodoc:
-      self.formats = request.formats.map(&:ref).compact
-      super
-    end
-
-    # Check for double render errors and set the content_type after rendering.
-    def render(*args) #:nodoc:
-      raise ::AbstractController::DoubleRenderError if self.response_body
-      super
-    end
-
-    # Overwrite render_to_string because body can now be set to a rack body.
-    def render_to_string(*)
-      result = super
-      if result.respond_to?(:each)
-        string = ""
-        result.each { |r| string << r }
-        string
+    # Normalizes arguments, options and then delegates render_to_body and
+    # sticks the result in <tt>self.response_body</tt>.
+    # :api: public
+    def render(*args, &block)
+      options = _normalize_render(*args, &block)
+      rendered_body = render_to_body(options)
+      if options[:html]
+        _set_html_content_type
       else
-        result
+        _set_rendered_content_type rendered_format
       end
+      self.response_body = rendered_body
     end
 
+    # Raw rendering of a template to a string.
+    #
+    # It is similar to render, except that it does not
+    # set the +response_body+ and it should be guaranteed
+    # to always return a string.
+    #
+    # If a component extends the semantics of +response_body+
+    # (as ActionController extends it to be anything that
+    # responds to the method each), this method needs to be
+    # overridden in order to still return a string.
+    # :api: plugin
+    def render_to_string(*args, &block)
+      options = _normalize_render(*args, &block)
+      render_to_body(options)
+    end
+
+    # Performs the actual template rendering.
+    # :api: public
     def render_to_body(options = {})
-      super || _render_in_priorities(options) || ' '
     end
 
-    private
+    # Returns Content-Type of rendered content
+    # :api: public
+    def rendered_format
+      Mime[:text]
+    end
 
-    def _render_in_priorities(options)
-      RENDER_FORMATS_IN_PRIORITY.each do |format|
-        return options[format] if options.key?(format)
+    DEFAULT_PROTECTED_INSTANCE_VARIABLES = Set.new %i(
+      @_action_name @_response_body @_formats @_prefixes @_config
+      @_view_context_class @_view_renderer @_lookup_context
+      @_routes @_db_runtime
+    )
+
+    # This method should return a hash with assigns.
+    # You can overwrite this configuration per controller.
+    # :api: public
+    def view_assigns
+      protected_vars = _protected_ivars
+      variables      = instance_variables
+
+      variables.reject! { |s| protected_vars.include? s }
+      variables.each_with_object({}) { |name, hash|
+        hash[name.slice(1, name.length)] = instance_variable_get(name)
+      }
+    end
+
+    # Normalize args by converting <tt>render "foo"</tt> to
+    # <tt>render :action => "foo"</tt> and <tt>render "foo/bar"</tt> to
+    # <tt>render :file => "foo/bar"</tt>.
+    # :api: plugin
+    def _normalize_args(action=nil, options={})
+      if action.is_a? Hash
+        action
+      else
+        options
       end
-
-      nil
     end
 
-    def _set_html_content_type
-      self.content_type = Mime[:html].to_s
-    end
-
-    def _set_rendered_content_type(format)
-      unless response.content_type
-        self.content_type = format.to_s
-      end
-    end
-
-    # Normalize arguments by catching blocks and setting them on :update.
-    def _normalize_args(action=nil, options={}, &blk) #:nodoc:
-      options = super
-      options[:update] = blk if block_given?
+    # Normalize options.
+    # :api: plugin
+    def _normalize_options(options)
       options
     end
 
-    # Normalize both text and status options.
-    def _normalize_options(options) #:nodoc:
-      _normalize_text(options)
-
-      if options[:text]
-        ActiveSupport::Deprecation.warn <<-WARNING.squish
-          `render :text` is deprecated because it does not actually render a
-          `text/plain` response. Switch to `render plain: 'plain text'` to
-          render as `text/plain`, `render html: '<strong>HTML</strong>'` to
-          render as `text/html`, or `render body: 'raw'` to match the deprecated
-          behavior and render with the default Content-Type, which is
-          `text/plain`.
-        WARNING
-      end
-
-      if options[:html]
-        options[:html] = ERB::Util.html_escape(options[:html])
-      end
-
-      if options.delete(:nothing)
-        ActiveSupport::Deprecation.warn("`:nothing` option is deprecated and will be removed in Rails 5.1. Use `head` method to respond with empty response body.")
-        options[:body] = nil
-      end
-
-      if options[:status]
-        options[:status] = Rack::Utils.status_code(options[:status])
-      end
-
-      super
+    # Process extra options.
+    # :api: plugin
+    def _process_options(options)
+      options
     end
 
-    def _normalize_text(options)
-      RENDER_FORMATS_IN_PRIORITY.each do |format|
-        if options.key?(format) && options[format].respond_to?(:to_text)
-          options[format] = options[format].to_text
-        end
-      end
+    # Process the rendered format.
+    # :api: private
+    def _process_format(format)
     end
 
-    # Process controller specific options, as status, content-type and location.
-    def _process_options(options) #:nodoc:
-      status, content_type, location = options.values_at(:status, :content_type, :location)
+    def _set_html_content_type # :nodoc:
+    end
 
-      self.status = status if status
-      self.content_type = content_type if content_type
-      self.headers["Location"] = url_for(location) if location
+    def _set_rendered_content_type(format) # :nodoc:
+    end
 
-      super
+    # Normalize args and options.
+    # :api: private
+    def _normalize_render(*args, &block)
+      options = _normalize_args(*args, &block)
+      #TODO: remove defined? when we restore AP <=> AV dependency
+      if defined?(request) && request.variant.present?
+        options[:variant] = request.variant
+      end
+      _normalize_options(options)
+      options
+    end
+
+    def _protected_ivars # :nodoc:
+      DEFAULT_PROTECTED_INSTANCE_VARIABLES
     end
   end
 end

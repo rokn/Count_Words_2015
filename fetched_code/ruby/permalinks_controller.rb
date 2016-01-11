@@ -1,35 +1,20 @@
-class Admin::PermalinksController < Admin::AdminController
+class PermalinksController < ApplicationController
+  skip_before_filter :check_xhr, :preload_json
 
-  before_filter :fetch_permalink, only: [:destroy]
+  def show
+    url = request.fullpath
 
-  def index
-    url = params[:filter]
-    permalinks = Permalink.filter_by(url)
-    render_serialized(permalinks, PermalinkSerializer)
-  end
+    permalink = Permalink.find_by_url(url)
 
-  def create
-    params.require(:url)
-    params.require(:permalink_type)
-    params.require(:permalink_type_value)
+    raise Discourse::NotFound unless permalink
 
-    permalink = Permalink.new(:url => params[:url], params[:permalink_type] => params[:permalink_type_value])
-    if permalink.save
-      render_serialized(permalink, PermalinkSerializer)
+    if permalink.external_url
+      redirect_to permalink.external_url, status: :moved_permanently
+    elsif permalink.target_url
+      redirect_to permalink.target_url, status: :moved_permanently
     else
-      render_json_error(permalink)
+      raise Discourse::NotFound
     end
-  end
-
-  def destroy
-    @permalink.destroy
-    render json: success_json
-  end
-
-  private
-
-  def fetch_permalink
-    @permalink = Permalink.find(params[:id])
   end
 
 end

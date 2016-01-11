@@ -1,17 +1,12 @@
-class Notifications::Mentioned < Notification
-  def mail_job
-    Workers::Mail::Mentioned
-  end
-  
-  def popup_translation_key
-    'notifications.mentioned'
-  end
+module NotificationMailers
+  class Mentioned < NotificationMailers::Base
+    attr_accessor :post
+    delegate :author_name, to: :post, prefix: true
 
-  def deleted_translation_key
-    'notifications.mentioned_deleted'
-  end
+    def set_headers(target_id)
+      @post = Mention.find_by_id(target_id).post
 
-  def linked_object
-    Mention.find(self.target_id).post
+      @headers[:subject] = I18n.t('notifier.mentioned.subject', :name => @sender.name)
+    end
   end
 end

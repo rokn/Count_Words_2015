@@ -1,122 +1,88 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+require 'rails_helper'
 
-require 'spec_helper'
+describe ApplicationHelper do
 
-describe ApplicationHelper, :type => :helper do
-  before do
-    @user = alice
-    @person = FactoryGirl.create(:person)
-  end
-
-  describe "#contacts_link" do
-    before do
-      def current_user
-        @current_user
-      end
+  describe "escape_unicode" do
+    it "encodes tags" do
+      expect(helper.escape_unicode("<tag>")).to eq("\u003ctag>")
     end
-
-    it 'links to community spotlight' do
-      @current_user = FactoryGirl.create(:user)
-      expect(contacts_link).to eq(community_spotlight_path)
-    end
-
-    it 'links to contacts#index' do
-      @current_user = alice
-      expect(contacts_link).to eq(contacts_path)
+    it "survives junk text" do
+      expect(helper.escape_unicode("hello \xc3\x28 world")).to match(/hello.*world/)
     end
   end
 
-  describe "#all_services_connected?" do
-    before do
-      AppConfig.configured_services = [1, 2, 3]
-
-      def current_user
-        @current_user
-      end
-      @current_user = alice
-    end
-
-    after do
-      AppConfig.configured_services = nil
-    end
-
-    it 'returns true if all networks are connected' do
-      3.times { |t| @current_user.services << FactoryGirl.build(:service) }
-      expect(all_services_connected?).to be true
-    end
-
-    it 'returns false if not all networks are connected' do
-      @current_user.services.delete_all
-      expect(all_services_connected?).to be false
-    end
-  end
-
-  describe "#jquery_include_tag" do
-    describe "with jquery cdn" do
+  describe "mobile_view?" do
+    context "enable_mobile_theme is true" do
       before do
-        AppConfig.privacy.jquery_cdn = true
+        SiteSetting.stubs(:enable_mobile_theme).returns(true)
       end
 
-      it 'inclues jquery.js from jquery cdn' do
-        expect(jquery_include_tag).to match(/jquery\.com/)
+      it "is true if mobile_view is '1' in the session" do
+        session[:mobile_view] = '1'
+        expect(helper.mobile_view?).to eq(true)
       end
 
-      it 'falls back to asset pipeline on cdn failure' do
-        expect(jquery_include_tag).to match(/document\.write/)
+      it "is false if mobile_view is '0' in the session" do
+        session[:mobile_view] = '0'
+        expect(helper.mobile_view?).to eq(false)
+      end
+
+      context "mobile_view is not set" do
+        it "is false if user agent is not mobile" do
+          controller.request.stubs(:user_agent).returns('Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.17 Safari/537.36')
+          expect(helper.mobile_view?).to be_falsey
+        end
+
+        it "is true for iPhone" do
+          controller.request.stubs(:user_agent).returns('Mozilla/5.0 (iPhone; U; ru; CPU iPhone OS 4_2_1 like Mac OS X; ru) AppleWebKit/533.17.9 (KHTML, like Gecko) Version/5.0.2 Mobile/8C148a Safari/6533.18.5')
+          expect(helper.mobile_view?).to eq(true)
+        end
+
+        it "is false for iPad" do
+          controller.request.stubs(:user_agent).returns("Mozilla/5.0 (iPad; CPU OS 5_1 like Mac OS X) AppleWebKit/534.46 (KHTML, like Gecko) Version/5.1 Mobile/9B176 Safari/7534.48.3")
+          expect(helper.mobile_view?).to eq(false)
+        end
+
+        it "is false for Nexus 10 tablet" do
+          controller.request.stubs(:user_agent).returns("Mozilla/5.0 (Linux; Android 4.2.1; Nexus 10 Build/JOP40D) AppleWebKit/535.19 (KHTML, like Gecko) Chrome/18.0.1025.166 Safari/535.19")
+          expect(helper.mobile_view?).to be_falsey
+        end
+
+        it "is true for Nexus 7 tablet" do
+          controller.request.stubs(:user_agent).returns("Mozilla/5.0 (Linux; Android 4.1.2; Nexus 7 Build/JZ054K) AppleWebKit/535.19 (KHTML, like Gecko) Chrome/18.0.1025.166 Safari/535.19")
+          expect(helper.mobile_view?).to eq(true)
+        end
       end
     end
 
-    describe "without jquery cdn" do
+    context "enable_mobile_theme is false" do
       before do
-        AppConfig.privacy.jquery_cdn = false
+        SiteSetting.stubs(:enable_mobile_theme).returns(false)
       end
 
-      it 'includes jquery.js from asset pipeline' do
-        expect(jquery_include_tag).to match(/jquery\.js/)
-        expect(jquery_include_tag).not_to match(/jquery\.com/)
+      it "is false if mobile_view is '1' in the session" do
+        session[:mobile_view] = '1'
+        expect(helper.mobile_view?).to eq(false)
+      end
+
+      it "is false if mobile_view is '0' in the session" do
+        session[:mobile_view] = '0'
+        expect(helper.mobile_view?).to eq(false)
+      end
+
+      context "mobile_view is not set" do
+        it "is false if user agent is not mobile" do
+          controller.request.stubs(:user_agent).returns('Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.17 Safari/537.36')
+          expect(helper.mobile_view?).to eq(false)
+        end
+
+        it "is false for iPhone" do
+          controller.request.stubs(:user_agent).returns('Mozilla/5.0 (iPhone; U; ru; CPU iPhone OS 4_2_1 like Mac OS X; ru) AppleWebKit/533.17.9 (KHTML, like Gecko) Version/5.0.2 Mobile/8C148a Safari/6533.18.5')
+          expect(helper.mobile_view?).to eq(false)
+        end
       end
     end
-
-    it 'inclues jquery_ujs.js' do
-      expect(jquery_include_tag).to match(/jquery_ujs\.js/)
-    end
-
-    it "disables ajax caching" do
-      expect(jquery_include_tag).to match(/jQuery\.ajaxSetup/)
-    end
   end
 
-  describe '#changelog_url' do
-    it 'defaults to master branch changleog' do
-      AppConfig.git_revision = nil
-      expect(changelog_url).to eq('https://github.com/diaspora/diaspora/blob/master/Changelog.md')
-    end
 
-    it 'displays the changelog for the current git revision if set' do
-      AppConfig.git_revision = '123'
-      expect(changelog_url).to eq('https://github.com/diaspora/diaspora/blob/123/Changelog.md')
-    end
-
-  end
-
-  describe '#pod_name' do
-    it 'defaults to Diaspora*' do
-      expect(pod_name).to  match /DIASPORA/i
-    end
-
-    it 'displays the supplied pod_name if it is set' do
-      AppConfig.settings.pod_name = "Catspora"
-      # require 'pry'; binding.pry
-      expect(pod_name).to match "Catspora"
-    end
-  end
-
-  describe '#pod_version' do
-    it 'displays the supplied pod_version if it is set' do
-      AppConfig.version.number = "0.0.1.0"
-      expect(pod_version).to match "0.0.1.0"
-    end
-  end
 end

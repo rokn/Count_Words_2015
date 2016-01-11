@@ -1,14 +1,29 @@
-require 'spec_helper'
+require 'rails_helper'
+require_dependency 'jobs/base'
 
-describe Workers::Mail::InviteEmail do
-  let(:emails) { ['foo@bar.com', 'baz@bar.com'] }
-  let(:message) { 'get over here!' }
-  let(:email_inviter) { double('EmailInviter') }
+describe Jobs::InviteEmail do
 
-  it 'creates a new email inviter' do
-    expect(EmailInviter).to receive(:new).with(emails, alice, message: message)
-      .and_return(email_inviter)
-    expect(email_inviter).to receive(:send!)
-    Workers::Mail::InviteEmail.new.perform(emails, alice.id, message: message)
+  context '.execute' do
+
+    it 'raises an error when the invite_id is missing' do
+      expect { Jobs::InviteEmail.new.execute({}) }.to raise_error(Discourse::InvalidParameters)
+    end
+
+    context 'with an invite id' do
+
+      let (:mailer) { Mail::Message.new(to: 'eviltrout@test.domain') }
+      let (:invite) { Fabricate(:invite) }
+
+      it 'delegates to the test mailer' do
+        Email::Sender.any_instance.expects(:send)
+        InviteMailer.expects(:send_invite).with(invite).returns(mailer)
+        Jobs::InviteEmail.new.execute(invite_id: invite.id)
+      end
+
+    end
+
   end
+
+
 end
+

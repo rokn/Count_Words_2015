@@ -1,64 +1,44 @@
 require 'spec_helper'
 
-module Spree
-  describe Api::V1::PromotionsController, :type => :controller do
-    render_views
+describe Spree::Admin::PromotionsController, :type => :controller do
+  stub_authorization!
 
-    shared_examples "a JSON response" do
-      it 'should be ok' do
-        expect(subject).to be_ok
-      end
+  let!(:promotion1) { create(:promotion, name: "name1", code: "code1", path: "path1") }
+  let!(:promotion2) { create(:promotion, name: "name2", code: "code2", path: "path2") }
+  let!(:category) { create :promotion_category }
 
-      it 'should return JSON' do
-        payload = HashWithIndifferentAccess.new(JSON.parse(subject.body))
-        expect(payload).to_not be_nil
-        Spree::Api::ApiHelpers.promotion_attributes.each do |attribute|
-          expect(payload.has_key?(attribute)).to be true
-        end
-      end
+  context "#index" do
+    it "succeeds" do
+      spree_get :index
+      expect(assigns[:promotions]).to match_array [promotion2, promotion1]
     end
 
-    before do
-      stub_authentication!
+    it "assigns promotion categories" do
+      spree_get :index
+      expect(assigns[:promotion_categories]).to match_array [category]
     end
 
-    let(:promotion) { create :promotion, code: '10off' }
-
-    describe 'GET #show' do
-      subject { api_get :show, id: id }
-
-      context 'when admin' do
-        sign_in_as_admin!
-
-        context 'when finding by id' do
-          let(:id) { promotion.id }
-
-          it_behaves_like "a JSON response"
-        end
-
-        context 'when finding by code' do
-          let(:id) { promotion.code }
-
-          it_behaves_like "a JSON response"
-        end
-
-        context 'when id does not exist' do
-          let(:id) { 'argh' }
-
-          it 'should be 404' do
-            expect(subject.status).to eq(404)
-          end
-        end
+    context "search" do
+      it "pages results" do
+        spree_get :index, per_page: '1'
+        expect(assigns[:promotions]).to eq [promotion2]
       end
 
-      context 'when non admin' do
-        let(:id) { promotion.id }
+      it "filters by name" do
+        spree_get :index, q: {name_cont: promotion1.name}
+        expect(assigns[:promotions]).to eq [promotion1]
+      end
 
-        it 'should be unauthorized' do
-          subject
-          assert_unauthorized!
-        end
+      it "filters by code" do
+        spree_get :index, q: {code_cont: promotion1.code}
+        expect(assigns[:promotions]).to eq [promotion1]
+      end
+
+      it "filters by path" do
+        spree_get :index, q: {path_cont: promotion1.path}
+        expect(assigns[:promotions]).to eq [promotion1]
       end
     end
   end
+
 end

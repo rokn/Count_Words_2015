@@ -1,48 +1,81 @@
-# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
-#
-# Fat Free CRM is freely distributable under the terms of MIT license.
-# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
-#------------------------------------------------------------------------------
 class String
-  alias_method :-, :delete
-
-  def n2br
-    strip.gsub("\n", "<br />")
+  def undent
+    gsub(/^[ \t]{#{(slice(/^[ \t]+/) || '').length}}/, "")
   end
 
-  def wrap(prefix, suffix = prefix)
-    prefix + self + suffix
+  # eg:
+  #   if foo then <<-EOS.undent_________________________________________________________72
+  #               Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do
+  #               eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad
+  #               minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip
+  #               ex ea commodo consequat. Duis aute irure dolor in reprehenderit in
+  #               voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur
+  #               sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt
+  #               mollit anim id est laborum.
+  #               EOS
+  alias_method :undent_________________________________________________________72, :undent
+
+  # String.chomp, but if result is empty: returns nil instead.
+  # Allows `chuzzle || foo` short-circuits.
+  def chuzzle
+    s = chomp
+    s unless s.empty?
   end
 
-  def digitize
-    gsub(/[^\d]/, "")  # "$100,000".digitize # => 100000
+  def strip_prefix(prefix)
+    start_with?(prefix) ? self[prefix.length..-1] : self
+  end
+end
+
+class NilClass
+  def chuzzle; end
+end
+
+# used by the inreplace function (in utils.rb)
+module StringInreplaceExtension
+  attr_accessor :errors
+
+  def self.extended(str)
+    str.errors = []
   end
 
-  def to_url
-    match(/^https?:\/\//) ? self : "http://" << self
-  end
-
-  def true?
-    self == "true"
-  end
-
-  def false?
-    self == "false"
-  end
-
-  # Generates all permutations for first and last name, based on the order of parts
-  # A query with 4 words will generate 6 permutations
-  def name_permutations
-    parts = split(" ")
-    (parts.size - 1).times.map do|i|
-      # ["A", "B", "C", "D"]  =>  [["A B C", "D"], ["A B", "C D"], ["A", "B C D"]]
-      [parts[(0..i)].join(" "), parts[(i + 1)..-1].join(" ")]
-    end.inject([]) do |arr, perm|
-      # Search both [first, last] and [last, first]
-      # e.g. for every ["A B C", "D"], also include ["D", "A B C"]
-      arr << perm
-      arr << perm.reverse
-      arr
+  def sub!(before, after)
+    result = super
+    unless result
+      errors << "expected replacement of #{before.inspect} with #{after.inspect}"
     end
+    result
+  end
+
+  # Warn if nothing was replaced
+  def gsub!(before, after, audit_result = true)
+    result = super(before, after)
+    if audit_result && result.nil?
+      errors << "expected replacement of #{before.inspect} with #{after.inspect}"
+    end
+    result
+  end
+
+  # Looks for Makefile style variable defintions and replaces the
+  # value with "new_value", or removes the definition entirely.
+  def change_make_var!(flag, new_value)
+    unless gsub!(/^#{Regexp.escape(flag)}[ \t]*=[ \t]*(.*)$/, "#{flag}=#{new_value}", false)
+      errors << "expected to change #{flag.inspect} to #{new_value.inspect}"
+    end
+  end
+
+  # Removes variable assignments completely.
+  def remove_make_var!(flags)
+    Array(flags).each do |flag|
+      # Also remove trailing \n, if present.
+      unless gsub!(/^#{Regexp.escape(flag)}[ \t]*=.*$\n?/, "", false)
+        errors << "expected to remove #{flag.inspect}"
+      end
+    end
+  end
+
+  # Finds the specified variable
+  def get_make_var(flag)
+    self[/^#{Regexp.escape(flag)}[ \t]*=[ \t]*(.*)$/, 1]
   end
 end

@@ -1,55 +1,21 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
+class Tag < ActsAsTaggableOn::Tag
+  before_destroy :no_associated_field_groups
 
-class Stream::Tag < Stream::Base
-  attr_accessor :tag_name, :people_page , :people_per_page
-
-  def initialize(user, tag_name, opts={})
-    self.tag_name = tag_name
-    self.people_page = opts[:page] || 1
-    self.people_per_page = 15
-    super(user, opts)
+  # Don't allow a tag to be deleted if it is associated with a Field Group
+  def no_associated_field_groups
+    FieldGroup.where(tag_id: id).none?
   end
 
-  def tag
-    @tag ||= ActsAsTaggableOn::Tag.named(tag_name).first
+  # Returns a count of taggings per model klass
+  # e.g. {"Contact" => 3, "Account" => 1}
+  def model_tagging_counts
+    Tagging.where(tag_id: id).group(:taggable_type).count
   end
 
-  def display_tag_name
-    @display_tag_name ||= "##{tag_name}"
-  end
-
-  def tagged_people
-    @people ||= ::Person.profile_tagged_with(tag_name).paginate(:page => people_page, :per_page => people_per_page)
-  end
-
-  def tagged_people_count
-    @people_count ||= ::Person.profile_tagged_with(tag_name).count
-  end
-
-  def posts
-    @posts ||= construct_post_query
-  end
-
-  def tag_name=(tag_name)
-    @tag_name = tag_name.downcase.gsub('#', '')
-  end
-
-  private
-
-  # @return [Hash]
-  def publisher_opts
-    {:open => true}
-  end
-
-  def construct_post_query
-    posts = StatusMessage
-    if user.present?
-      posts = posts.owned_or_visible_by_user(user)
-    else
-      posts = posts.all_public
-    end
-    posts.tagged_with(tag_name, :any => true)
-  end
+  ActiveSupport.run_load_hooks(:fat_free_crm_tag, self)
 end

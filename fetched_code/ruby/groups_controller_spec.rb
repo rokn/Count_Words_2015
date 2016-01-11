@@ -1,135 +1,231 @@
 require 'rails_helper'
 
-describe Admin::GroupsController do
+describe GroupsController do
+  let(:group) { Fabricate(:group) }
 
-  before do
-    @admin = log_in(:admin)
+  describe 'show' do
+    it "ensures the group can be seen" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(false)
+      xhr :get, :show, id: group.name
+      expect(response).not_to be_success
+    end
+
+    it "responds with JSON" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(true)
+      xhr :get, :show, id: group.name
+      expect(response).to be_success
+      expect(::JSON.parse(response.body)['basic_group']['id']).to eq(group.id)
+    end
+
+    it "works even with an upper case group name" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(true)
+      xhr :get, :show, id: group.name.upcase
+      expect(response).to be_success
+      expect(::JSON.parse(response.body)['basic_group']['id']).to eq(group.id)
+    end
   end
 
-  it "is a subclass of AdminController" do
-    expect(Admin::GroupsController < Admin::AdminController).to eq(true)
+  describe "counts" do
+    it "returns counts if it can be seen" do
+      xhr :get, :counts, group_id: group.name
+      expect(response).to be_success
+    end
+
+    it "returns no counts if it can not be seen" do
+      group.update_columns(visible: false)
+      xhr :get, :counts, group_id: group.name
+      expect(response).not_to be_success
+    end
   end
 
-  context ".index" do
+  describe "posts" do
+    it "ensures the group can be seen" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(false)
+      xhr :get, :posts, group_id: group.name
+      expect(response).not_to be_success
+    end
 
-    it "produces valid json for groups" do
-      group = Fabricate.build(:group, name: "test")
-      group.add(@admin)
+    it "calls `posts_for` and responds with JSON" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(true)
+      Group.any_instance.expects(:posts_for).returns(Group.none)
+      xhr :get, :posts, group_id: group.name
+      expect(response).to be_success
+    end
+  end
+
+  describe "members" do
+    it "ensures the group can be seen" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(false)
+      xhr :get, :members, group_id: group.name
+      expect(response).not_to be_success
+    end
+
+    it "calls `posts_for` and responds with JSON" do
+      Guardian.any_instance.expects(:can_see?).with(group).returns(true)
+      xhr :get, :posts, group_id: group.name
+      expect(response).to be_success
+    end
+
+    # Pending until we fix group truncation
+    skip "ensures that membership can be paginated" do
+      5.times { group.add(Fabricate(:user)) }
+      usernames = group.users.map{ |m| m['username'] }.sort
+
+      xhr :get, :members, group_id: group.name, limit: 3
+      expect(response).to be_success
+      members = JSON.parse(response.body)
+      expect(members.map{ |m| m['username'] }).to eq(usernames[0..2])
+
+      xhr :get, :members, group_id: group.name, limit: 3, offset: 3
+      expect(response).to be_success
+      members = JSON.parse(response.body)
+      expect(members.map{ |m| m['username'] }).to eq(usernames[3..4])
+    end
+  end
+
+
+  describe "membership edit permission" do
+    it "refuses membership changes to unauthorized users" do
+      Guardian.any_instance.stubs(:can_edit?).with(group).returns(false)
+
+      xhr :put, :add_members, id: group.id, usernames: "bob"
+      expect(response).to be_forbidden
+
+      xhr :delete, :remove_member, id: group.id, username: "bob"
+      expect(response).to be_forbidden
+    end
+
+    it "cannot add members to automatic groups" do
+      Guardian.any_instance.stubs(:is_admin?).returns(true)
+      group = Fabricate(:group, name: "auto_group", automatic: true)
+
+      xhr :put, :add_members, id: group.id, usernames: "bob"
+      expect(response).to be_forbidden
+    end
+  end
+
+  describe "membership edits" do
+    before do
+      @user1 = Fabricate(:user)
+      group.add(@user1)
+      group.reload
+
+      Guardian.any_instance.stubs(:can_edit?).with(group).returns(true)
+    end
+
+    it "can make incremental adds" do
+      user2 = Fabricate(:user)
+      xhr :put, :add_members, id: group.id, usernames: user2.username
+
+      expect(response).to be_success
+      group.reload
+      expect(group.users.count).to eq(2)
+    end
+
+    it "can make incremental deletes" do
+      xhr :delete, :remove_member, id: group.id, username: @user1.username
+
+      expect(response).to be_success
+      group.reload
+      expect(group.users.count).to eq(0)
+    end
+
+  end
+
+  context ".add_members" do
+
+    before do
+      @admin = log_in(:admin)
+    end
+
+    it "cannot add members to automatic groups" do
+      xhr :put, :add_members, id: 1, usernames: "l77t"
+      expect(response.status).to eq(403)
+    end
+
+    context "is able to add several members to a group" do
+
+      let(:user1) { Fabricate(:user) }
+      let(:user2) { Fabricate(:user) }
+      let(:group) { Fabricate(:group) }
+
+      it "adds by username" do
+        xhr :put, :add_members, id: group.id, usernames: [user1.username, user2.username].join(",")
+
+        expect(response).to be_success
+        group.reload
+        expect(group.users.count).to eq(2)
+      end
+
+      it "adds by id" do
+        xhr :put, :add_members, id: group.id, user_ids: [user1.id, user2.id].join(",")
+
+        expect(response).to be_success
+        group.reload
+        expect(group.users.count).to eq(2)
+      end
+    end
+
+    it "returns 422 if member already exists" do
+      group = Fabricate(:group)
+      existing_member = Fabricate(:user)
+      group.add(existing_member)
       group.save
 
-      xhr :get, :index
-      expect(response.status).to eq(200)
-      expect(::JSON.parse(response.body).keep_if {|r| r["id"] == group.id }).to eq([{
-        "id"=>group.id,
-        "name"=>group.name,
-        "user_count"=>1,
-        "automatic"=>false,
-        "alias_level"=>0,
-        "visible"=>true,
-        "automatic_membership_email_domains"=>nil,
-        "automatic_membership_retroactive"=>false,
-        "title"=>nil,
-        "primary_group"=>false,
-        "grant_trust_level"=>nil,
-        "incoming_email"=>nil,
-        "notification_level"=>3,
-        "has_messages"=>false
-      }])
-    end
-
-  end
-
-  context ".bulk" do
-    it "can assign users to a group by email or username" do
-      group = Fabricate(:group, name: "test", primary_group: true, title: 'WAT')
-      user = Fabricate(:user)
-      user2 = Fabricate(:user)
-
-      xhr :put, :bulk_perform, group_id: group.id, users: [user.username.upcase, user2.email, 'doesnt_exist']
-
-      expect(response).to be_success
-
-      user.reload
-      expect(user.primary_group).to eq(group)
-      expect(user.title).to eq("WAT")
-
-      user2.reload
-      expect(user2.primary_group).to eq(group)
-
-    end
-  end
-
-  context ".create" do
-
-    it "strip spaces on the group name" do
-      xhr :post, :create, name: " bob "
-
-      expect(response.status).to eq(200)
-
-      groups = Group.where(name: "bob").to_a
-
-      expect(groups.count).to eq(1)
-      expect(groups[0].name).to eq("bob")
-    end
-
-  end
-
-  context ".update" do
-
-    it "ignore name change on automatic group" do
-      xhr :put, :update, id: 1, name: "WAT", visible: "true"
-      expect(response).to be_success
-
-      group = Group.find(1)
-      expect(group.name).not_to eq("WAT")
-      expect(group.visible).to eq(true)
-    end
-
-    it "doesn't launch the 'automatic group membership' job when it's not retroactive" do
-      Jobs.expects(:enqueue).never
-      group = Fabricate(:group)
-      xhr :put, :update, id: group.id, automatic_membership_retroactive: "false"
-      expect(response).to be_success
-    end
-
-    it "launches the 'automatic group membership' job when it's retroactive" do
-      group = Fabricate(:group)
-      Jobs.expects(:enqueue).with(:automatic_group_membership, group_id: group.id)
-      xhr :put, :update, id: group.id, automatic_membership_retroactive: "true"
-      expect(response).to be_success
-    end
-
-  end
-
-  context ".destroy" do
-
-    it "returns a 422 if the group is automatic" do
-      group = Fabricate(:group, automatic: true)
-      xhr :delete, :destroy, id: group.id
+      xhr :put, :add_members, id: group.id, usernames: existing_member.username
       expect(response.status).to eq(422)
-      expect(Group.where(id: group.id).count).to eq(1)
-    end
-
-    it "is able to destroy a non-automatic group" do
-      group = Fabricate(:group)
-      xhr :delete, :destroy, id: group.id
-      expect(response.status).to eq(200)
-      expect(Group.where(id: group.id).count).to eq(0)
     end
 
   end
 
-  context ".refresh_automatic_groups" do
+  context ".remove_member" do
 
-    it "is able to refresh automatic groups" do
-      Group.expects(:refresh_automatic_groups!).returns(true)
+    before do
+      @admin = log_in(:admin)
+    end
 
-      xhr :post, :refresh_automatic_groups
-      expect(response.status).to eq(200)
+    it "cannot remove members from automatic groups" do
+      xhr :put, :remove_member, id: 1, user_id: 42
+      expect(response.status).to eq(403)
+    end
+
+    context "is able to remove a member" do
+
+      let(:user) { Fabricate(:user) }
+      let(:group) { Fabricate(:group) }
+
+      before do
+        group.add(user)
+        group.save
+      end
+
+      it "removes by id" do
+        xhr :delete, :remove_member, id: group.id, user_id: user.id
+
+        expect(response).to be_success
+        group.reload
+        expect(group.users.count).to eq(0)
+      end
+
+      it "removes by username" do
+        xhr :delete, :remove_member, id: group.id, username: user.username
+
+        expect(response).to be_success
+        group.reload
+        expect(group.users.count).to eq(0)
+      end
+
+      it "removes user.primary_group_id when user is removed from group" do
+        user.primary_group_id = group.id
+        user.save
+
+        xhr :delete, :remove_member, id: group.id, username: user.username
+
+        user.reload
+        expect(user.primary_group_id).to eq(nil)
+      end
     end
 
   end
-
-
 
 end

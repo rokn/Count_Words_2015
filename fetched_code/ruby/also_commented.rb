@@ -1,17 +1,23 @@
-class Notifications::AlsoCommented < Notification
-  def mail_job
-    Workers::Mail::AlsoCommented
-  end
-  
-  def popup_translation_key
-    'notifications.also_commented'
-  end
+module NotificationMailers
+  class AlsoCommented < NotificationMailers::Base
+    attr_accessor :comment
+    delegate :post, to: :comment, prefix: true
 
-  def deleted_translation_key
-    'notifications.also_commented_deleted'
-  end
+    def set_headers(comment_id)
+      @comment = Comment.find_by_id(comment_id)
 
-  def linked_object
-    Post.where(:id => self.target_id).first
+      if mail?
+        @headers[:from] = "\"#{@comment.author_name} (diaspora*)\" <#{AppConfig.mail.sender_address}>"
+        if @comment.public?
+          @headers[:subject] = "Re: #{@comment.comment_email_subject}"
+        else
+          @headers[:subject] = I18n.t("notifier.also_commented.limited_subject")
+        end
+      end
+    end
+
+    def mail?
+      @recipient && @sender && @comment
+    end
   end
 end

@@ -2,38 +2,46 @@
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-require 'spec_helper'
+class AccountDeletion < ActiveRecord::Base
+  include Diaspora::Federated::Base
 
-shared_examples_for 'it removes the person associations' do
-  it "removes all of the person's posts" do
-    expect(Post.where(:author_id => @person.id).count).to eq(0)
+  scope :uncompleted, -> { where('completed_at is null') }
+
+  belongs_to :person
+  after_commit :queue_delete_account, :on => :create
+
+  xml_name :account_deletion
+  xml_attr :diaspora_handle
+
+
+  def person=(person)
+    self[:diaspora_handle] = person.diaspora_handle
+    self[:person_id] = person.id
   end
 
-  it 'deletes all person contacts' do
-    expect(Contact.where(:person_id => @person.id)).to be_empty
+  def diaspora_handle=(diaspora_handle)
+    self[:diaspora_handle] = diaspora_handle
+    self[:person_id] ||= Person.find_by_diaspora_handle(diaspora_handle).id
   end
 
-  it 'deletes all mentions' do
-    expect(@person.mentions).to be_empty
+  def queue_delete_account
+    Workers::DeleteAccount.perform_async(self.id)
   end
 
-  it "removes all of the person's photos" do
-    expect(Photo.where(:author_id => @person.id)).to be_empty
+  def perform!
+    self.dispatch if person.local?
+    AccountDeleter.new(self.diaspora_handle).perform!
   end
 
-  it 'sets the person object as closed and the profile is cleared' do
-    expect(@person.reload.closed_account).to  be true
-
-    expect(@person.profile.reload.first_name).to  be_blank
-    expect(@person.profile.reload.last_name).to  be_blank
+  def subscribers(user)
+    person.owner.contact_people.remote | Person.who_have_reshared_a_users_posts(person.owner).remote
   end
 
-  it 'deletes only the converersation visibility for the deleted user' do
-    expect(ConversationVisibility.where(:person_id => alice.person.id)).not_to be_empty
-    expect(ConversationVisibility.where(:person_id => @person.id)).to be_empty
+  def dispatch
+    Postzord::Dispatcher.build(person.owner, self).post
   end
 
-  it "deletes the share visibilities on the person's posts" do
-    expect(ShareVisibility.for_contacts_of_a_person(@person)).to be_empty
+  def public?
+    true
   end
 end

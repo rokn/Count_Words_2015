@@ -1,39 +1,29 @@
 module Spree
-  module Api
-    module V1
-      class StatesController < Spree::Api::BaseController
-        skip_before_action :set_expiry
-        skip_before_action :check_for_user_or_api_key
-        skip_before_action :authenticate_user
+  module Admin
+    class StatesController < ResourceController
+      belongs_to 'spree/country'
+      before_action :load_data
 
-        def index
-          @states = scope.ransack(params[:q]).result.includes(:country)
-
-          if params[:page] || params[:per_page]
-            @states = @states.page(params[:page]).per(params[:per_page])
-          end
-
-          state = @states.last
-          if stale?(state)
-            respond_with(@states)
-          end
+      def index
+        respond_with(@collection) do |format|
+          format.html
+          format.js { render :partial => 'state_list' }
         end
-
-        def show
-          @state = scope.find(params[:id])
-          respond_with(@state)
-        end
-
-        private
-          def scope
-            if params[:country_id]
-              @country = Country.accessible_by(current_ability, :read).find(params[:country_id])
-              return @country.states.accessible_by(current_ability, :read).order('name ASC')
-            else
-              return State.accessible_by(current_ability, :read).order('name ASC')
-            end
-          end
       end
+
+      protected
+
+        def location_after_save
+          admin_country_states_url(@country)
+        end
+
+        def collection
+          super.order(:name)
+        end
+
+        def load_data
+          @countries = Country.order(:name)
+        end
     end
   end
 end

@@ -3,169 +3,271 @@
 # Fat Free CRM is freely distributable under the terms of MIT license.
 # See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
 #------------------------------------------------------------------------------
-DROPBOX_EMAILS = {
-  plain: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: Ben Bootloader <ben@example.com>
-Subject: Hi there
-Date: Mon, 26 May 2003 11:22:33 -0600
-Message-ID: <1234@local.machine.example>
-Content-Type: text/plain
+require 'fat_free_crm/mail_processor/base'
 
-#{FFaker::Lorem.paragraph}
+module FatFreeCRM
+  module MailProcessor
+    class Dropbox < Base
+      KEYWORDS = %w(account campaign contact lead opportunity).freeze
 
-Aaron
-END
+      #--------------------------------------------------------------------------------------
+      def initialize
+        # Models are autoloaded, so the following @@assets class variable should only be set
+        # when Dropbox is initialized. This needs to be done so that Rake tasks such as
+        # 'assets:precompile' can run on Heroku without depending on a database.
+        # See: http://devcenter.heroku.com/articles/rails31_heroku_cedar#troubleshooting
+        @@assets = [Account, Contact, Lead].freeze
+        @settings = Setting.email_dropbox.dup
+        super
+      end
 
-  html: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: Ben Bootloader <ben@example.com>
-Subject: Hi there
-Date: Mon, 26 May 2003 11:22:33 -0600
-Message-ID: <1234@local.machine.example>
-Content-Type: text/html
+      private
 
-<html>
-  <head></head>
-  <body>
-    <p>#{FFaker::Lorem.paragraph}</p>
-    <p>Aaron</p>
-  </body>
-</html>
-END
+      # Email processing pipeline: each steps gets executed if previous one returns false.
+      #--------------------------------------------------------------------------------------
+      def process(_uid, email)
+        with_explicit_keyword(email) do |keyword, name|
+          data = { "Type" => keyword, "Name" => name }
+          find_or_create_and_attach(email, data)
+        end && return
 
-  first_line: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: Ben Bootloader <ben@example.com>
-Subject: Hi there
-Date: Mon, 26 May 2003 11:22:33 -0600
-Message-ID: <1234@local.machine.example>
-Content-Type: text/plain
+        with_recipients(email) do |recipient|
+          find_and_attach(email, recipient)
+        end && return
 
-.campaign Got milk
-#{FFaker::Lorem.paragraph}
+        with_forwarded_recipient(email) do |recipient|
+          find_and_attach(email, recipient)
+        end && return
 
-Aaron
-END
+        with_recipients(email) do |recipient|
+          create_and_attach(email, recipient)
+        end && return
 
-  first_line_lead: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: Ben Bootloader <ben@example.com>
-Subject: Hi there
-Date: Mon, 26 May 2003 11:22:33 -0600
-Message-ID: <1234@local.machine.example>
-Content-Type: text/plain
+        with_forwarded_recipient(email) do |recipient|
+          create_and_attach(email, recipient)
+        end
+      end
 
-.lead Cindy Cluster
-#{FFaker::Lorem.paragraph}
+      # Checks the email to detect keyword on the first line.
+      #--------------------------------------------------------------------------------------
+      def with_explicit_keyword(email)
+        first_line = plain_text_body(email).split("\n").first
+        if first_line =~ %r{(#{KEYWORDS.join('|')})[^a-zA-Z0-9]+(.+)$}i
+          yield Regexp.last_match[1].capitalize, Regexp.last_match[2].strip
+        end
+      end
 
-Aaron
-END
+      # Checks the email to detect assets on to/bcc addresses
+      #--------------------------------------------------------------------------------------
+      def with_recipients(email, _options = {})
+        recipients = []
+        recipients += email.to_addrs unless email.to.blank?
+        recipients += email.cc_addrs unless email.cc.blank?
 
-  first_line_contact: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: Ben Bootloader <ben@example.com>
-Subject: Hi there
-Date: Mon, 26 May 2003 11:22:33 -0600
-Message-ID: <1234@local.machine.example>
-Content-Type: text/plain
+        # Ignore the dropbox email address, and any address aliases
+        ignored_addresses = [@settings[:address]]
+        if @settings[:address_aliases].is_a?(Array)
+          ignored_addresses += @settings[:address_aliases]
+        end
+        recipients -= ignored_addresses
 
-.contact Cindy Cluster
-#{FFaker::Lorem.paragraph}
+        # Process each recipient until email has been attached
+        recipients.each do |recipient|
+          return true if yield recipient
+        end
+        false
+      end
 
-Aaron
-END
+      # Checks the email to detect valid email address in body (first email), detect forwarded emails
+      #----------------------------------------------------------------------------------------
+      def with_forwarded_recipient(email, _options = {})
+        if plain_text_body(email) =~ /\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4})\b/
+          yield Regexp.last_match[1]
+        end
+      end
 
-  forwarded: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: dropbox@example.com
-Subject: Hi there
-Date: Mon, 26 May 2003 11:22:33 -0600
-Message-ID: <1234@local.machine.example>
-Content-Type: text/plain
+      # Process pipe_separated_data or explicit keyword.
+      #--------------------------------------------------------------------------------------
+      def find_or_create_and_attach(email, data)
+        klass = data["Type"].constantize
 
----------- Forwarded message ----------
-From: Ben Bootloader <ben@example.com>
-Date: Sun, Mar 22, 2009 at 3:28 PM
-Subject: Fwd:
-To: Cindy Cluster <cindy@example.com>
+        if data["Email"] && klass.new.respond_to?(:email)
+          conditions = [
+            "(lower(email) = ? OR lower(alt_email) = ?)",
+            data["Email"].downcase,
+            data["Email"].downcase
+          ]
+        elsif klass.new.respond_to?(:first_name)
+          first_name, *last_name = data["Name"].split
+          conditions = if last_name.empty? # Treat single name as last name.
+                         ['last_name LIKE ?', "%#{first_name}"]
+                       else
+                         ['first_name LIKE ? AND last_name LIKE ?', "%#{first_name}", "%#{last_name.join(' ')}"]
+          end
+        else
+          conditions = ['name LIKE ?', "%#{data['Name']}%"]
+        end
 
-#{FFaker::Lorem.paragraph}
+        # Find the asset from deduced conditions
+        if asset = klass.where(conditions).first
+          if sender_has_permissions_for?(asset)
+            attach(email, asset, :strip_first_line)
+          else
+            log "Sender does not have permissions to attach email to #{data['Type']} #{data['Email']} <#{data['Name']}>"
+          end
+        else
+          log "#{data['Type']} #{data['Email']} <#{data['Name']}> not found, creating new one..."
+          asset = klass.create!(default_values(klass, data))
+          attach(email, asset, :strip_first_line)
+        end
+        true
+      end
 
-Ben
-END
+      #----------------------------------------------------------------------------------------
+      def find_and_attach(email, recipient)
+        attached = false
+        @@assets.each do |klass|
+          asset = klass.where(["(lower(email) = ?)", recipient.downcase]).first
 
-  multipart: <<-END,
-From: Aaron Assembler <aaron@example.com>
-To: Ben Bootloader <ben@example.com>
-Subject: Hi there
-Date: Fri, 30 Mar 2012 15:04:05 +0800
-Message-ID: <1234@local.machine.example>
-Content-Type: multipart/related;
-        boundary="_006_200DA2FF7EAFC04BAD979DB9CF293BB365151E88CLEARWATERtesta_";
-        type="text/html"
+          # Leads and Contacts have an alt_email: try it if lookup by primary email has failed.
+          if !asset && klass.column_names.include?("alt_email")
+            asset = klass.where(["(lower(alt_email) = ?)", recipient.downcase]).first
+          end
 
---_006_200DA2FF7EAFC04BAD979DB9CF293BB365151E88CLEARWATERtesta_
-Content-Type: text/html; charset="iso-8859-1"
-Content-Transfer-Encoding: quoted-printable
+          if asset && sender_has_permissions_for?(asset)
+            attach(email, asset)
+            attached = true
+          end
+        end
+        attached
+      end
 
-<html>
-<head>
-<meta http-equiv=3D"Content-Type" content=3D"text/html; charset=3Diso-8859-=
-1">
-<meta name=3D"Generator" content=3D"Microsoft Word 14 (filtered medium)">
-<!--[if !mso]><style>v\:* {behavior:url(#default#VML);}
-o\:* {behavior:url(#default#VML);}
-w\:* {behavior:url(#default#VML);}
-.shape {behavior:url(#default#VML);}
-</style><![endif]--><style><!--
-/* Font Definitions */
-@font-face
-        {font-family:Calibri;
-        panose-1:2 15 5 2 2 2 4 3 2 4;}
-/* Style Definitions */
-p.MsoNormal, li.MsoNormal, div.MsoNormal
-        {margin:0in;
-        margin-bottom:.0001pt;
-        font-size:11.0pt;
-        font-family:"Calibri","sans-serif";}
-div.WordSection1
-        {page:WordSection1;}
---></style><!--[if gte mso 9]><xml>
-<o:shapedefaults v:ext=3D"edit" spidmax=3D"1026" />
-</xml><![endif]--><!--[if gte mso 9]><xml>
-<o:shapelayout v:ext=3D"edit">
-<o:idmap v:ext=3D"edit" data=3D"1" />
-</o:shapelayout></xml><![endif]-->
-</head>
-<body lang=3D"EN-US" link=3D"blue" vlink=3D"purple">
-<div class=3D"WordSection1">
-<p class=3D"MsoNormal"><span style=3D"color:#1F497D"><o:p>Hello,</o:p></spa=
-n></p>
-</div>
-</body>
-</html>
+      #----------------------------------------------------------------------------------------
+      def create_and_attach(email, recipient)
+        contact = Contact.create!(default_values_for_contact(email, recipient))
+        attach(email, contact)
+      end
 
---_006_200DA2FF7EAFC04BAD979DB9CF293BB365151E88CLEARWATERtesta_
-Content-Type: image/gif; name="image007.gif"
-Content-Description: image007.gif
-Content-Disposition: inline; filename="image007.gif"; size=633;
-        creation-date="Fri, 30 Mar 2012 07:04:05 GMT";
-        modification-date="Fri, 30 Mar 2012 07:04:05 GMT"
-Content-ID:<image007.gif@01CD0DBA.FB4A2170>
-Content-Transfer-Encoding: base64
+      #----------------------------------------------------------------------------------------
+      def attach(email, asset, strip_first_line = false)
+        # If 'sent_to' email cannot be found, default to Dropbox email address
+        to = email.to.blank? ? @settings[:address] : email.to.join(", ")
+        cc = email.cc.blank? ? nil : email.cc.join(", ")
 
-R0lGODlhXQASALMAAIiIiBESESIjIt3d3VVWVURFRLu7u2ZnZpmZmaqqqjM0M3d4d+7u7gABAMzM
-zP///yH5BAAAAAAALAAAAABdABIAAAT/8MlJ63Q2683tAAvTjdKwAFqyJBLQoGQsP0MgKGy3PuDi
-/4tHotHAWASN4MNRGMyeHYKAkshZGMnHQcFt3LhCr5IqhppH4IliXMGy3eRFQEQpELIS+oRR9Rgl
-VU4VBgmCFwkGFAxcdIshent4eZJhBi8Ulgh4QzkMd0QBElwLRCJyRA0HewqoiUsFqAIYQ6g4qKVt
-lHATQ55TEwQFu5wSBQEADB+iATgIWscMDC6qDwWyDAhONQUODA4KAQN8XIjjBH25b5S9mRIOL8MN
-LC5WanPulxOkGAIEFVJ6GATw9yCNKDaKdK1rIKJAAQkHpsRjISWDQReGHliiCG+CAGoTzAooEDVS
-DcJI6tj0CtPt2IOJBUtWMEgKEhYUnhq43KUvVEwKazTwfLmQTj8A92CKtCgTIyZ5F+6gCACyWEmD
-BU9OSkmGDlIF1GC6cAVUpiUYEkhlfCAgiLWAVEkCJXhFoUqGEwIU2QoI6qIACJIpwXoAmrQASg50
-G4LCQQBu3gjc+6lGwIA/KBPe1bOALkwasIj8wqoFFWKPqEA6QEKEmxqZQvTi1UxbEQebFRwkwJxh
-ADpMhSwQ4p2Bz9o8V84oX868ufPn0KNLn64hAgA7
+        email_body = if strip_first_line
+                       plain_text_body(email).split("\n")[1..-1].join("\n").strip
+                     else
+                       plain_text_body(email)
+        end
 
---_006_200DA2FF7EAFC04BAD979DB9CF293BB365151E88CLEARWATERtesta_--
-END
-}
+        Email.create(
+          imap_message_id: email.message_id,
+          user:            @sender,
+          mediator:        asset,
+          sent_from:       email.from.first,
+          sent_to:         to,
+          cc:              cc,
+          subject:         email.subject,
+          body:            email_body,
+          received_at:     email.date,
+          sent_at:         email.date
+        )
+        asset.touch
+
+        if asset.is_a?(Lead) && asset.status == "new"
+          asset.update_attribute(:status, "contacted")
+        end
+
+        if @settings[:attach_to_account] && asset.respond_to?(:account) && asset.account
+          Email.create(
+            imap_message_id: email.message_id,
+            user:            @sender,
+            mediator:        asset.account,
+            sent_from:       email.from.first,
+            sent_to:         to,
+            cc:              cc,
+            subject:         email.subject,
+            body:            email_body,
+            received_at:     email.date,
+            sent_at:         email.date
+          )
+          asset.account.touch
+        end
+      end
+
+      #----------------------------------------------------------------------------------------
+      def default_values(klass, data)
+        data = data.dup
+        keyword = data.delete("Type").capitalize
+
+        defaults = {
+          user:   @sender,
+          access: default_access
+        }
+
+        case keyword
+        when "Account", "Campaign", "Opportunity"
+          defaults[:status] = "planned" if keyword == "Campaign"      # TODO: I18n
+          defaults[:stage] = Opportunity.default_stage if keyword == "Opportunity" # TODO: I18n
+
+        when "Contact", "Lead"
+          first_name, *last_name = data.delete("Name").split(' ')
+          defaults[:first_name] = first_name
+          defaults[:last_name] = (last_name.any? ? last_name.join(" ") : "(unknown)")
+          defaults[:status] = "contacted" if keyword == "Lead"        # TODO: I18n
+        end
+
+        data.each do |key, value|
+          key = key.downcase
+          defaults[key.to_sym] = value if klass.new.respond_to?(key + '=')
+        end
+
+        defaults
+      end
+
+      #----------------------------------------------------------------------------------------
+      def default_values_for_contact(_email, recipient)
+        recipient_local, recipient_domain = recipient.split('@')
+
+        defaults = {
+          user:       @sender,
+          first_name: recipient_local.capitalize,
+          last_name:  "(unknown)",
+          email:      recipient,
+          access:     default_access
+        }
+
+        # Search for domain name in Accounts.
+        account = Account.where('(lower(email) like ? OR lower(website) like ?)', "%#{recipient_domain.downcase}", "%#{recipient_domain.downcase}%").first
+        if account
+          log "asociating new contact #{recipient} with the account #{account.name}"
+          defaults[:account] = account
+        else
+          log "creating new account #{recipient_domain.capitalize} for the contact #{recipient}"
+          defaults[:account] = Account.create!(
+            user:   @sender,
+            email:  recipient,
+            name:   recipient_domain.capitalize,
+            access: default_access
+          )
+        end
+        defaults
+      end
+
+      # If default access is 'Shared' then change it to 'Private' because we don't know how
+      # to choose anyone to share it with here.
+      #--------------------------------------------------------------------------------------
+      def default_access
+        Setting.default_access == "Shared" ? 'Private' : Setting.default_access
+      end
+
+      # Notify users with the results of the operations
+      #--------------------------------------------------------------------------------------
+      def notify(email, mediator_links)
+        DropboxMailer.create_dropbox_notification(
+          @sender, @settings[:address], email, mediator_links
+        ).deliver_now
+      end
+    end
+  end
+end

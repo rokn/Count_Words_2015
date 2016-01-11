@@ -1,16 +1,18 @@
-# Copyright (c) 2010-2011, Diaspora Inc.  This file is
-# licensed under the Affero General Public License version 3 or later.  See
-# the COPYRIGHT file.
+class Maintenance < ActionMailer::Base
+  default :from => AppConfig.mail.sender_address
 
-unless AppConfig.mail.enable?
-  if AppConfig.settings.maintenance.remove_old_users.enable?
-    # The maintenance job remove_old_users will warn users
-    # of inactivity removal before removing the users.
-    # Warn podmins here that enable it but don't have mail enabled.
-    puts "
-WARNING: Maintenance that removes inactive users is enabled
-but mail is disabled! This means there will be no warning email
-sent to users whose accounts are flagged for removal!
-See configuration setting 'settings.maintenance.remove_old_users'."
+  def account_removal_warning(user)
+    @user = user
+    @login_url  = new_user_session_url
+    @pod_url = AppConfig.environment.url
+    @after_days = AppConfig.settings.maintenance.remove_old_users.after_days.to_s
+    @remove_after = @user.remove_after
+
+    I18n.with_locale(@user.language) do
+      mail(to: @user.email, subject: I18n.t("notifier.remove_old_user.subject")) do |format|
+        format.text
+        format.html
+      end
+    end
   end
 end

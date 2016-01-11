@@ -1,126 +1,59 @@
 module Spree
-  module Api
-    module V1
-      class ProductsController < Spree::Api::BaseController
+  class ProductsController < Spree::StoreController
+    before_action :load_product, only: :show
+    before_action :load_taxon, only: :index
 
-        def index
-          if params[:ids]
-            @products = product_scope.where(id: params[:ids].split(",").flatten)
-          else
-            @products = product_scope.ransack(params[:q]).result
-          end
+    rescue_from ActiveRecord::RecordNotFound, :with => :render_404
+    helper 'spree/taxons'
 
-          @products = @products.distinct.page(params[:page]).per(params[:per_page])
-          expires_in 15.minutes, :public => true
-          headers['Surrogate-Control'] = "max-age=#{15.minutes}"
-          respond_with(@products)
-        end
+    respond_to :html
 
-        def show
-          @product = find_product(params[:id])
-          expires_in 15.minutes, :public => true
-          headers['Surrogate-Control'] = "max-age=#{15.minutes}"
-          headers['Surrogate-Key'] = "product_id=1"
-          respond_with(@product)
-        end
-
-        # Takes besides the products attributes either an array of variants or
-        # an array of option types.
-        #
-        # By submitting an array of variants the option types will be created
-        # using the *name* key in options hash. e.g
-        #
-        #   product: {
-        #     ...
-        #     variants: {
-        #       price: 19.99,
-        #       sku: "hey_you",
-        #       options: [
-        #         { name: "size", value: "small" },
-        #         { name: "color", value: "black" }
-        #       ]
-        #     }
-        #   }
-        #
-        # Or just pass in the option types hash:
-        #
-        #   product: {
-        #     ...
-        #     option_types: ['size', 'color']
-        #   }
-        #
-        # By passing the shipping category name you can fetch or create that
-        # shipping category on the fly. e.g.
-        #
-        #   product: {
-        #     ...
-        #     shipping_category: "Free Shipping Items"
-        #   }
-        #
-        def create
-          authorize! :create, Product
-          params[:product][:available_on] ||= Time.current
-          set_up_shipping_category
-
-          options = { variants_attrs: variants_params, options_attrs: option_types_params }
-          @product = Core::Importer::Product.new(nil, product_params, options).create
-
-          if @product.persisted?
-            respond_with(@product, :status => 201, :default_template => :show)
-          else
-            invalid_resource!(@product)
-          end
-        end
-
-        def update
-          @product = find_product(params[:id])
-          authorize! :update, @product
-
-          options = { variants_attrs: variants_params, options_attrs: option_types_params }
-          @product = Core::Importer::Product.new(@product, product_params, options).update
-
-          if @product.errors.empty?
-            respond_with(@product.reload, :status => 200, :default_template => :show)
-          else
-            invalid_resource!(@product)
-          end
-        end
-
-        def destroy
-          @product = find_product(params[:id])
-          authorize! :destroy, @product
-          @product.destroy
-          respond_with(@product, :status => 204)
-        end
-
-        private
-          def product_params
-            params.require(:product).permit(permitted_product_attributes)
-          end
-
-          def variants_params
-            variants_key = if params[:product].has_key? :variants
-              :variants
-            else
-              :variants_attributes
-            end
-
-            params.require(:product).permit(
-              variants_key => [permitted_variant_attributes, :id],
-            ).delete(variants_key) || []
-          end
-
-          def option_types_params
-            params[:product].fetch(:option_types, [])
-          end
-
-          def set_up_shipping_category
-            if shipping_category = params[:product].delete(:shipping_category)
-              id = ShippingCategory.find_or_create_by(name: shipping_category).id
-              params[:product][:shipping_category_id] = id
-            end
-          end
-      end
+    def index
+      @searcher = build_searcher(params.merge(include_images: true))
+      @products = @searcher.retrieve_products
+      @taxonomies = Spree::Taxonomy.includes(root: :children)
     end
+
+    def show
+      @variants = @product.variants_including_master.
+                           spree_base_scopes.
+                           active(current_currency).
+                           includes([:option_values, :images])
+      @product_properties = @product.product_properties.includes(:property)
+      @taxon = Spree::Taxon.find(params[:taxon_id]) if params[:taxon_id]
+      redirect_if_legacy_path
+    end
+
+    private
+
+      def accurate_title
+        if @product
+          @product.meta_title.blank? ? @product.name : @product.meta_title
+        else
+          super
+        end
+      end
+
+      def load_product
+        if try_spree_current_user.try(:has_spree_role?, "admin")
+          @products = Product.with_deleted
+        else
+          @products = Product.active(current_currency)
+        end
+        @product = @products.includes(:variants_including_master).friendly.find(params[:id])
+      end
+
+      def load_taxon
+        @taxon = Spree::Taxon.find(params[:taxon]) if params[:taxon].present?
+      end
+
+      def redirect_if_legacy_path
+        # If an old id or a numeric id was used to find the record,
+        # we should do a 301 redirect that uses the current friendly id.
+        if params[:id] != @product.friendly_id
+          params.merge!(id: @product.friendly_id)
+          return redirect_to url_for(params), status: :moved_permanently
+        end
+      end
   end
 end

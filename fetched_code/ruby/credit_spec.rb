@@ -1,35 +1,52 @@
 require 'spec_helper'
 
 module Spree
-  describe Reimbursement::Credit, :type => :model do
-    context 'class methods' do
-      describe '.total_amount_reimbursed_for' do
-        subject { Spree::Reimbursement::Credit.total_amount_reimbursed_for(reimbursement) }
+  describe ReimbursementType::Credit, :type => :model do
+    let(:reimbursement)           { create(:reimbursement, return_items_count: 1) }
+    let(:return_item)             { reimbursement.return_items.first }
+    let(:payment)                 { reimbursement.order.payments.first }
+    let(:simulate)                { false }
+    let!(:default_refund_reason)  { Spree::RefundReason.find_or_create_by!(name: Spree::RefundReason::RETURN_PROCESSING_REASON, mutable: false) }
+    let(:creditable)              { DummyCreditable.new(amount: 99.99) }
 
-        let(:reimbursement) { create(:reimbursement) }
-        let(:credit_double) { double(amount: 99.99) }
+    class DummyCreditable < Spree::Base
+      attr_accessor :amount
+      self.table_name = 'spree_payments' # Your creditable class should not use this table
+    end
 
-        before { allow(reimbursement).to receive(:credits).and_return([credit_double, credit_double])}
+    subject { Spree::ReimbursementType::Credit.reimburse(reimbursement, [return_item], simulate)}
 
-        it 'should sum the amounts of all of the reimbursements credits' do
-          expect(subject).to eq BigDecimal.new('199.98')
+    before do
+      reimbursement.update!(total: reimbursement.calculated_total)
+      allow(Spree::ReimbursementType::Credit).to receive(:create_creditable).and_return(creditable)
+    end
+
+    describe '.reimburse' do
+      context 'simulate is true' do
+        let(:simulate) { true }
+
+        it 'creates one readonly lump credit for all outstanding balance payable to the customer' do
+          expect(subject.map(&:class)).to eq [Spree::Reimbursement::Credit]
+          expect(subject.map(&:readonly?)).to eq [true]
+          expect(subject.sum(&:amount)).to eq reimbursement.return_items.to_a.sum(&:total)
+        end
+
+        it 'does not save to the database' do
+          expect { subject }.to_not change { Spree::Reimbursement::Credit.count }
         end
       end
-    end
 
-    describe '#description' do
-      let(:credit) { Spree::Reimbursement::Credit.new(amount: 100, creditable: mock_model(Spree::PaymentMethod::Check)) }
+      context 'simulate is false' do
+        let(:simulate) { false }
 
-      it "should be the creditable's class name" do
-        expect(credit.description).to eq 'Check'
-      end
-    end
+        before do
+          expect(creditable).to receive(:save).and_return(true)
+        end
 
-    describe '#display_amount' do
-      let(:credit) { Spree::Reimbursement::Credit.new(amount: 100) }
-
-      it 'should be a money object' do
-        expect(credit.display_amount).to eq Spree::Money.new(100, currency: "USD")
+        it 'creates one lump credit for all outstanding balance payable to the customer' do
+          expect { subject }.to change { Spree::Reimbursement::Credit.count }.by(1)
+          expect(subject.sum(&:amount)).to eq reimbursement.return_items.to_a.sum(&:total)
+        end
       end
     end
   end

@@ -1,194 +1,49 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+Discourse::Application.configure do
+  # Settings specified here will take precedence over those in config/application.rb
 
-class Profile < ActiveRecord::Base
-  self.include_root_in_json = false
+  config.eager_load = true
 
-  include Diaspora::Federated::Base
-  include Diaspora::Taggable
+  # Code is not reloaded between requests
+  config.cache_classes = true
 
-  attr_accessor :tag_string
-  acts_as_taggable_on :tags
-  extract_tags_from :tag_string
-  validates :tag_list, :length => { :maximum => 5 }
+  config.log_level = :info
 
-  xml_attr :diaspora_handle
-  xml_attr :first_name
-  xml_attr :last_name
-  xml_attr :image_url
-  xml_attr :image_url_small
-  xml_attr :image_url_medium
-  xml_attr :birthday
-  xml_attr :gender
-  xml_attr :bio
-  xml_attr :location
-  xml_attr :searchable
-  xml_attr :nsfw
-  xml_attr :tag_string
+  # Full error reports are disabled and caching is turned on
+  config.consider_all_requests_local       = false
+  config.action_controller.perform_caching = true
 
-  before_save :strip_names
-  after_validation :strip_names
+  # in profile mode we serve static assets
+  config.serve_static_files = true
 
-  validates :first_name, :length => { :maximum => 32 }
-  validates :last_name, :length => { :maximum => 32 }
-  validates :location, :length => { :maximum =>255 }
+  # Compress JavaScripts and CSS
+  config.assets.compress = true
 
-  validates_format_of :first_name, :with => /\A[^;]+\z/, :allow_blank => true
-  validates_format_of :last_name, :with => /\A[^;]+\z/, :allow_blank => true
-  validate :max_tags
-  validate :valid_birthday
+  # stuff should be pre-compiled, allow compilation to make life easier
+  config.assets.compile = true
 
-  belongs_to :person
-  before_validation do
-    self.tag_string = self.tag_string.split[0..4].join(' ')
-    self.build_tags
+  # Generate digests for assets URLs
+  config.assets.digest = true
+
+  # Specifies the header that your server uses for sending files
+  config.action_dispatch.x_sendfile_header = 'X-Accel-Redirect' # for nginx
+
+  # we recommend you use mailcatcher https://github.com/sj26/mailcatcher
+  config.action_mailer.smtp_settings = { address: "localhost", port: 1025 }
+
+  # Send deprecation notices to registered listeners
+  config.active_support.deprecation = :notify
+
+  # precompile handlebar assets
+  config.handlebars.precompile = true
+
+  # allows users to use mini profiler
+  config.load_mini_profiler = false
+
+  # we don't need full logster support, but need to keep it working
+  config.after_initialize do
+    Logster.logger = Rails.logger
   end
 
-  before_save do
-    self.build_tags
-    self.construct_full_name
-  end
-
-  def subscribers(user)
-    Person.joins(:contacts).where(:contacts => {:user_id => user.id})
-  end
-
-  def receive(user, person)
-    person.reload # make sure to have old profile referenced
-    logger.info "event=receive payload_type=profile sender=#{person.diaspora_handle} to=#{user.diaspora_handle}"
-    profiles_attr = self.attributes.merge('tag_string' => self.tag_string).slice('diaspora_handle', 'first_name', 'last_name', 'image_url', 'image_url_small', 'image_url_medium', 'birthday', 'gender', 'bio', 'location', 'searchable', 'nsfw', 'tag_string')
-    person.profile.update_attributes(profiles_attr)
-
-    person.profile
-  end
-
-  def diaspora_handle
-    #get the parent diaspora handle, unless we want to access a profile without a person
-    (self.person) ? self.person.diaspora_handle : self[:diaspora_handle]
-  end
-
-  def image_url(size=:thumb_large)
-    result = if size == :thumb_medium && self[:image_url_medium]
-               self[:image_url_medium]
-             elsif size == :thumb_small && self[:image_url_small]
-               self[:image_url_small]
-             else
-               self[:image_url]
-             end
-
-    if result
-      if AppConfig.privacy.camo.proxy_remote_pod_images?
-        Diaspora::Camo.image_url(result)
-      else
-        result
-      end
-    else
-      ActionController::Base.helpers.image_path("user/default.png")
-    end
-  end
-
-  def from_omniauth_hash(omniauth_user_hash)
-    mappings = {"description" => "bio",
-               'image' => 'image_url',
-               'name' => 'first_name',
-               'location' =>  'location',
-                }
-
-    update_hash = Hash[ omniauth_user_hash.map {|k, v| [mappings[k], v] } ]
-
-    self.attributes.merge(update_hash){|key, old, new| old.blank? ? new : old}
-  end
-
-  def image_url=(url)
-    super(build_image_url(url))
-  end
-
-  def image_url_small=(url)
-    super(build_image_url(url))
-  end
-
-  def image_url_medium=(url)
-    super(build_image_url(url))
-  end
-
-  def date= params
-    if ['month', 'day'].all? { |key| params[key].present?  }
-      params['year'] = '1000' if params['year'].blank?
-      if Date.valid_civil?(params['year'].to_i, params['month'].to_i, params['day'].to_i)
-        self.birthday = Date.new(params['year'].to_i, params['month'].to_i, params['day'].to_i)
-      else
-        @invalid_birthday_date = true
-      end
-    elsif [ 'year', 'month', 'day'].all? { |key| params[key].blank? }
-      self.birthday = nil
-    end
-  end
-
-  def formatted_birthday
-    birthday.to_s(:long).gsub(', 1000', '') if birthday.present?
-  end
-
-  def bio_message
-    @bio_message ||= Diaspora::MessageRenderer.new(bio)
-  end
-
-  def location_message
-    @location_message ||= Diaspora::MessageRenderer.new(location)
-  end
-
-  def tag_string
-    if @tag_string
-      @tag_string
-    else
-      tags = self.tags.pluck(:name)
-      tags.inject(""){|string, tag| string << "##{tag} " }
-    end
-  end
-
-  # Constructs a full name by joining #first_name and #last_name
-  # @return [String] A full name
-  def construct_full_name
-    self.full_name = [self.first_name, self.last_name].join(' ').downcase.strip
-    self.full_name
-  end
-
-  def tombstone!
-    self.taggings.delete_all
-    clearable_fields.each do |field|
-      self[field] = nil
-    end
-    self[:searchable] = false
-    self.save
-  end
-
-  protected
-  def strip_names
-    self.first_name.strip! if self.first_name
-    self.last_name.strip! if self.last_name
-  end
-
-  def max_tags
-    if self.tag_string.count('#') > 5
-      errors[:base] << 'Profile cannot have more than five tags'
-    end
-  end
-
-  def valid_birthday
-    if @invalid_birthday_date
-      errors.add(:birthday)
-      @invalid_birthday_date = nil
-    end
-  end
-
-  private
-  def clearable_fields
-    self.attributes.keys - ["id", "created_at", "updated_at", "person_id"]
-  end
-
-  def build_image_url(url)
-    return nil if url.blank? || url.match(/user\/default/)
-    return url if url.match(/^https?:\/\//)
-    "#{AppConfig.pod_uri.to_s.chomp('/')}#{url}"
-  end
+  # for profiling with perftools
+  # config.middleware.use ::Rack::PerftoolsProfiler, default_printer: 'gif'
 end

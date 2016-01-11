@@ -1,74 +1,112 @@
 require 'rails_helper'
 
-describe Admin::EmailController do
+describe EmailController do
 
-  it "is a subclass of AdminController" do
-    expect(Admin::EmailController < Admin::AdminController).to eq(true)
-  end
+  context '.preferences_redirect' do
 
-  let!(:user) { log_in(:admin) }
-
-  context '.index' do
-    before do
-      subject.expects(:action_mailer_settings).returns({
-        username: 'username',
-        password: 'secret'
-      })
-
-      xhr :get, :index
+    it 'requires you to be logged in' do
+      expect { get :preferences_redirect }.to raise_error(Discourse::NotLoggedIn)
     end
 
-    it 'does not include the password in the response' do
-      mail_settings = JSON.parse(response.body)['settings']
+    context 'when logged in' do
+      let!(:user) { log_in }
 
-      expect(
-        mail_settings.select { |setting| setting['name'] == 'password' }
-      ).to be_empty
-    end
-  end
-
-  context '.sent' do
-    before do
-      xhr :get, :sent
-    end
-
-    subject { response }
-    it { is_expected.to be_success }
-  end
-
-  context '.skipped' do
-    before do
-      xhr :get, :skipped
-    end
-
-    subject { response }
-    it { is_expected.to be_success }
-  end
-
-  context '.test' do
-    it 'raises an error without the email parameter' do
-      expect { xhr :post, :test }.to raise_error(ActionController::ParameterMissing)
-    end
-
-    context 'with an email address' do
-      it 'enqueues a test email job' do
-        job_mock = mock
-        Jobs::TestEmail.expects(:new).returns(job_mock)
-        job_mock.expects(:execute).with(to_address: 'eviltrout@test.domain')
-        xhr :post, :test, email_address: 'eviltrout@test.domain'
+      it 'redirects to your user preferences' do
+        get :preferences_redirect
+        expect(response).to redirect_to("/users/#{user.username}/preferences")
       end
     end
+
   end
 
-  context '.preview_digest' do
-    it 'raises an error without the last_seen_at parameter' do
-      expect { xhr :get, :preview_digest }.to raise_error(ActionController::ParameterMissing)
+  context '.resubscribe' do
+
+    let(:user) { Fabricate(:user, email_digests: false) }
+    let(:key) { DigestUnsubscribeKey.create_key_for(user) }
+
+    context 'with a valid key' do
+      before do
+        get :resubscribe, key: key
+        user.reload
+      end
+
+      it 'subscribes the user' do
+        expect(user.email_digests).to eq(true)
+      end
     end
 
-    it "previews the digest" do
-      xhr :get, :preview_digest, last_seen_at: 1.week.ago, username: user.username
-      expect(response).to be_success
+  end
+
+  context '.unsubscribe' do
+
+    let(:user) { Fabricate(:user) }
+    let(:key) { DigestUnsubscribeKey.create_key_for(user) }
+
+    context 'with a valid key' do
+      before do
+        get :unsubscribe, key: key
+        user.reload
+      end
+
+      it 'unsubscribes the user' do
+        expect(user.email_digests).to eq(false)
+      end
+
+      it "sets the appropriate instance variables" do
+        expect(assigns(:success)).to be_present
+      end
     end
+
+    context "with an expired key or invalid key" do
+      before do
+        get :unsubscribe, key: 'watwatwat'
+      end
+
+      it "sets the appropriate instance variables" do
+        expect(assigns(:success)).to be_blank
+      end
+    end
+
+    context 'when logged in as a different user' do
+      let!(:logged_in_user) { log_in(:coding_horror) }
+
+      before do
+        get :unsubscribe, key: key
+        user.reload
+      end
+
+      it 'does not unsubscribe the user' do
+        expect(user.email_digests).to eq(true)
+      end
+
+      it 'sets the appropriate instance variables' do
+        expect(assigns(:success)).to be_blank
+        expect(assigns(:different_user)).to be_present
+      end
+    end
+
+    context 'when logged in as the keyed user' do
+
+      before do
+        log_in_user(user)
+        get :unsubscribe, key: DigestUnsubscribeKey.create_key_for(user)
+        user.reload
+      end
+
+      it 'unsubscribes the user' do
+        expect(user.email_digests).to eq(false)
+      end
+
+      it 'sets the appropriate instance variables' do
+        expect(assigns(:success)).to be_present
+      end
+    end
+
+    it "sets not_found when the key didn't match anything" do
+      get :unsubscribe, key: 'asdfasdf'
+      expect(assigns(:not_found)).to eq(true)
+    end
+
   end
 
 end

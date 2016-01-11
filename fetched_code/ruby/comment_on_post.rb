@@ -1,17 +1,16 @@
-class Notifications::CommentOnPost < Notification
-  def mail_job
-    Workers::Mail::CommentOnPost
-  end
+module NotificationMailers
+  class CommentOnPost < NotificationMailers::Base
+    attr_accessor :comment
 
-  def popup_translation_key
-    'notifications.comment_on_post'
-  end
+    def set_headers(comment_id)
+      @comment = Comment.find(comment_id)
 
-  def deleted_translation_key
-    'notifications.also_commented_deleted'
-  end
-
-  def linked_object
-    Post.where(:id => self.target_id).first
+      @headers[:from] = "\"#{@comment.author_name} (diaspora*)\" <#{AppConfig.mail.sender_address}>"
+      if @comment.public?
+        @headers[:subject] = "Re: #{@comment.comment_email_subject}"
+      else
+        @headers[:subject] = I18n.t("notifier.comment_on_post.limited_subject")
+      end
+    end
   end
 end

@@ -1,11 +1,32 @@
 module Spree
-  class ShippingCategory < Spree::Base
-    validates :name, presence: true
+  module Stock
+    module Splitter
+      class ShippingCategory < Spree::Stock::Splitter::Base
+        def split(packages)
+          split_packages = []
+          packages.each do |package|
+            split_packages += split_by_category(package)
+          end
+          return_next split_packages
+        end
 
-    with_options inverse_of: :shipping_category do
-      has_many :products
-      has_many :shipping_method_categories
+        private
+        def split_by_category(package)
+          categories = Hash.new { |hash, key| hash[key] = [] }
+          package.contents.each do |item|
+            categories[item.variant.shipping_category_id] << item
+          end
+          hash_to_packages(categories)
+        end
+
+        def hash_to_packages(categories)
+          packages = []
+          categories.each do |id, contents|
+            packages << build_package(contents)
+          end
+          packages
+        end
+      end
     end
-    has_many :shipping_methods, through: :shipping_method_categories
   end
 end
