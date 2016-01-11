@@ -1,53 +1,35 @@
-require 'helper'
-require 'ostruct'
+# frozen_string_literal: false
+require_relative 'base'
 
-class TestConvertible < JekyllUnitTest
-  context "yaml front-matter" do
-    setup do
-      @convertible = OpenStruct.new(
-        "site" => Site.new(Jekyll.configuration(
-          "source" => File.expand_path('../fixtures', __FILE__)
-        ))
-      )
-      @convertible.extend Jekyll::Convertible
-      @base = File.expand_path('../fixtures', __FILE__)
-    end
-
-    should "parse the front-matter correctly" do
-      ret = @convertible.read_yaml(@base, 'front_matter.erb')
-      assert_equal({'test' => 'good'}, ret)
-    end
-
-    should "not parse if the front-matter is not at the start of the file" do
-      ret = @convertible.read_yaml(@base, 'broken_front_matter1.erb')
-      assert_equal({}, ret)
-    end
-
-    should "not parse if there is syntax error in front-matter" do
-      name = 'broken_front_matter2.erb'
-      out = capture_stderr do
-        ret = @convertible.read_yaml(@base, name)
-        assert_equal({}, ret)
+class TestMkmf
+  class TestConvertible < TestMkmf
+    def test_typeof_builtin
+      ["", ["signed ", ""], "unsigned "].each do |signed, prefix|
+        %w[short int long].each do |type|
+          assert_equal((prefix || signed)+type,
+                       mkmf {convertible_int(signed+type)}, MKMFLOG)
+        end
       end
-      assert_match(/YAML Exception|syntax error|Error reading file/, out)
-      assert_match(/#{File.join(@base, name)}/, out)
     end
 
-    should "not allow ruby objects in yaml" do
-      out = capture_stderr do
-        @convertible.read_yaml(@base, 'exploit_front_matter.erb')
+    def test_typeof_typedef
+      ["", ["signed ", ""], "unsigned "].each do |signed, prefix|
+        %w[short int long].each do |type|
+          open("confdefs.h", "w") {|f|
+            f.puts "typedef #{signed}#{type} test1_t;"
+          }
+          $defs.clear
+          assert_equal((prefix || signed)+type,
+                       mkmf {convertible_int("test1_t", "confdefs.h")}, MKMFLOG)
+          (u = signed[/^u/]) and u.upcase!
+          assert_include($defs, "-DTYPEOF_TEST1_T="+"#{prefix||signed}#{type}".quote)
+          assert_include($defs, "-DPRI_TEST1T_PREFIX=PRI_#{type.upcase}_PREFIX")
+          assert_include($defs, "-DTEST1T2NUM=#{u}#{type.upcase}2NUM")
+          assert_include($defs, "-DNUM2TEST1T=NUM2#{u}#{type.upcase}")
+        end
       end
-      refute_match /undefined class\/module DoesNotExist/, out
-    end
-
-    should "not parse if there is encoding error in file" do
-      name = 'broken_front_matter3.erb'
-      out = capture_stderr do
-        ret = @convertible.read_yaml(@base, name, :encoding => 'utf-8')
-        assert_equal({}, ret)
-      end
-      assert_match(/invalid byte sequence in UTF-8/, out)
-      assert_match(/#{File.join(@base, name)}/, out)
+    ensure
+      File.unlink("confdefs.h")
     end
   end
 end

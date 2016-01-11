@@ -1,262 +1,110 @@
-require 'helper'
+# frozen_string_literal: false
+require "test/unit"
+require "webrick/utils"
 
-class TestUtils < JekyllUnitTest
-  context "The \`Utils.deep_merge_hashes\` method" do
-    setup do
-      clear_dest
-      @site = fixture_site
-      @site.process
-    end
+class TestWEBrickUtils < Test::Unit::TestCase
+  def teardown
+    WEBrick::Utils::TimeoutHandler.terminate
+    super
+  end
 
-    should "merge a drop into a hash" do
-      data = {"page" => {}}
-      merged = Utils.deep_merge_hashes(data, @site.site_payload)
-      assert merged.is_a? Hash
-      assert merged["site"].is_a? Drops::SiteDrop
-      assert_equal data["page"], {}
-    end
-
-    should "merge a hash into a drop" do
-      data = {"page" => {}}
-      assert_nil @site.site_payload["page"]
-      merged = Utils.deep_merge_hashes(@site.site_payload, data)
-      assert merged.is_a? Drops::UnifiedPayloadDrop
-      assert merged["site"].is_a? Drops::SiteDrop
-      assert_equal data["page"], {}
+  def assert_expired(m)
+    Thread.handle_interrupt(Timeout::Error => :never, EX => :never) do
+      assert_empty(m::TimeoutHandler.instance.instance_variable_get(:@timeout_info))
     end
   end
 
-  context "hash" do
-
-    context "pluralized_array" do
-
-      should "return empty array with no values" do
-        data = {}
-        assert_equal [], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return empty array with no matching values" do
-        data = { 'foo' => 'bar' }
-        assert_equal [], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return plural array with nil singular" do
-        data = { 'foo' => 'bar', 'tag' => nil, 'tags' => ['dog', 'cat'] }
-        assert_equal ['dog', 'cat'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return single value array with matching singular" do
-        data = { 'foo' => 'bar', 'tag' => 'dog', 'tags' => ['dog', 'cat'] }
-        assert_equal ['dog'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return single value array with matching singular with spaces" do
-        data = { 'foo' => 'bar', 'tag' => 'dog cat', 'tags' => ['dog', 'cat'] }
-        assert_equal ['dog cat'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return empty array with matching nil plural" do
-        data = { 'foo' => 'bar', 'tags' => nil }
-        assert_equal [], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return empty array with matching empty array" do
-        data = { 'foo' => 'bar', 'tags' => [] }
-        assert_equal [], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return single value array with matching plural with single string value" do
-        data = { 'foo' => 'bar', 'tags' => 'dog' }
-        assert_equal ['dog'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return multiple value array with matching plural with single string value with spaces" do
-        data = { 'foo' => 'bar', 'tags' => 'dog cat' }
-        assert_equal ['dog', 'cat'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return single value array with matching plural with single value array" do
-        data = { 'foo' => 'bar', 'tags' => ['dog'] }
-        assert_equal ['dog'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-      should "return multiple value array with matching plural with multiple value array" do
-        data = { 'foo' => 'bar', 'tags' => ['dog', 'cat'] }
-        assert_equal ['dog', 'cat'], Utils.pluralized_array_from_hash(data, 'tag', 'tags')
-      end
-
-    end
-
-  end
-
-  context "The \`Utils.parse_date\` method" do
-    should "parse a properly formatted date" do
-      assert Utils.parse_date("2014-08-02 14:43:06 PDT").is_a? Time
-    end
-
-    should "throw an error if the input contains no date data" do
-      assert_raises Jekyll::Errors::FatalException do
-        Utils.parse_date("Blah")
-      end
-    end
-
-    should "throw an error if the input is out of range" do
-      assert_raises Jekyll::Errors::FatalException do
-        Utils.parse_date("9999-99-99")
-      end
-    end
-
-    should "throw an error with the default message if no message is passed in" do
-      date = "Blah this is invalid"
-      assert_raises Jekyll::Errors::FatalException, "Invalid date '#{date}': Input could not be parsed." do
-        Utils.parse_date(date)
-      end
-    end
-
-    should "throw an error with the provided message if a message is passed in" do
-      date = "Blah this is invalid"
-      message = "Aaaah, the world has exploded!"
-      assert_raises Jekyll::Errors::FatalException, "Invalid date '#{date}': #{message}" do
-        Utils.parse_date(date, message)
-      end
+  def assert_not_expired(m)
+    Thread.handle_interrupt(Timeout::Error => :never, EX => :never) do
+      assert_not_empty(m::TimeoutHandler.instance.instance_variable_get(:@timeout_info))
     end
   end
 
-  context "The \`Utils.slugify\` method" do
-    should "return nil if passed nil" do
-      begin
-        assert Utils.slugify(nil).nil?
-      rescue NoMethodError
-        assert false, "Threw NoMethodError"
-      end
-    end
+  EX = Class.new(StandardError)
 
-    should "replace whitespace with hyphens" do
-      assert_equal "working-with-drafts", Utils.slugify("Working with drafts")
-    end
-
-    should "replace consecutive whitespace with a single hyphen" do
-      assert_equal "basic-usage", Utils.slugify("Basic   Usage")
-    end
-
-    should "trim leading and trailing whitespace" do
-      assert_equal "working-with-drafts", Utils.slugify("  Working with drafts   ")
-    end
-
-    should "drop trailing punctuation" do
-      assert_equal "so-what-is-jekyll-exactly", Utils.slugify("So what is Jekyll, exactly?")
-      assert_equal "كيف-حالك", Utils.slugify("كيف حالك؟")
-    end
-
-    should "ignore hyphens" do
-      assert_equal "pre-releases", Utils.slugify("Pre-releases")
-    end
-
-    should "replace underscores with hyphens" do
-      assert_equal "the-config-yml-file", Utils.slugify("The _config.yml file")
-    end
-
-    should "combine adjacent hyphens and spaces" do
-      assert_equal "customizing-git-git-hooks", Utils.slugify("Customizing Git - Git Hooks")
-    end
-
-    should "replace punctuation in any scripts by hyphens" do
-      assert_equal "5時-6時-三-一四", Utils.slugify("5時〜6時 三・一四")
-    end
-
-    should "not modify the original string" do
-      title = "Quick-start guide"
-      Utils.slugify(title)
-      assert_equal "Quick-start guide", title
-    end
-
-    should "not change behaviour if mode is default" do
-      assert_equal "the-config-yml-file", Utils.slugify("The _config.yml file?", mode: "default")
-    end
-
-    should "not change behaviour if mode is nil" do
-      assert_equal "the-config-yml-file", Utils.slugify("The _config.yml file?")
-    end
-
-    should "not replace period and underscore if mode is pretty" do
-      assert_equal "the-_config.yml-file", Utils.slugify("The _config.yml file?", mode: "pretty")
-    end
-
-    should "only replace whitespace if mode is raw" do
-      assert_equal "the-_config.yml-file?", Utils.slugify("The _config.yml file?", mode: "raw")
-    end
-
-    should "return the given string if mode is none" do
-      assert_equal "the _config.yml file?", Utils.slugify("The _config.yml file?", mode: "none")
-    end
-
-    should "Keep all uppercase letters if cased is true" do
-      assert_equal "Working-with-drafts", Utils.slugify("Working with drafts", cased: true)
-      assert_equal "Basic-Usage", Utils.slugify("Basic   Usage", cased: true)
-      assert_equal "Working-with-drafts", Utils.slugify("  Working with drafts   ", cased: true)
-      assert_equal "So-what-is-Jekyll-exactly", Utils.slugify("So what is Jekyll, exactly?", cased: true)
-      assert_equal "Pre-releases", Utils.slugify("Pre-releases", cased: true)
-      assert_equal "The-config-yml-file", Utils.slugify("The _config.yml file", cased: true)
-      assert_equal "Customizing-Git-Git-Hooks", Utils.slugify("Customizing Git - Git Hooks", cased: true)
-      assert_equal "The-config-yml-file", Utils.slugify("The _config.yml file?", mode: "default", cased: true)
-      assert_equal "The-config-yml-file", Utils.slugify("The _config.yml file?", cased: true)
-      assert_equal "The-_config.yml-file", Utils.slugify("The _config.yml file?", mode: "pretty", cased: true)
-      assert_equal "The-_config.yml-file?", Utils.slugify("The _config.yml file?", mode: "raw", cased: true)
-      assert_equal "The _config.yml file?", Utils.slugify("The _config.yml file?", mode: "none", cased: true)
-    end
+  def test_no_timeout
+    m = WEBrick::Utils
+    assert_equal(:foo, m.timeout(10){ :foo })
+    assert_expired(m)
   end
 
-  context "The \`Utils.add_permalink_suffix\` method" do
-    should "handle built-in permalink styles" do
-      assert_equal "/:basename/", Utils.add_permalink_suffix("/:basename", :pretty)
-      assert_equal "/:basename:output_ext", Utils.add_permalink_suffix("/:basename", :date)
-      assert_equal "/:basename:output_ext", Utils.add_permalink_suffix("/:basename", :ordinal)
-      assert_equal "/:basename:output_ext", Utils.add_permalink_suffix("/:basename", :none)
-    end
-
-    should "handle custom permalink styles" do
-      assert_equal "/:basename/", Utils.add_permalink_suffix("/:basename", "/:title/")
-      assert_equal "/:basename:output_ext", Utils.add_permalink_suffix("/:basename", "/:title:output_ext")
-      assert_equal "/:basename", Utils.add_permalink_suffix("/:basename", "/:title")
-    end
+  def test_nested_timeout_outer
+    m = WEBrick::Utils
+    i = 0
+    assert_raise(Timeout::Error){
+      m.timeout(0.2){
+        assert_raise(Timeout::Error){ m.timeout(0.1){ i += 1; sleep } }
+        assert_not_expired(m)
+        i += 1
+        sleep
+      }
+    }
+    assert_equal(2, i)
+    assert_expired(m)
   end
 
-  context "The \`Utils.safe_glob\` method" do
-    should "not apply pattern to the dir" do
-      dir = "test/safe_glob_test["
-      assert_equal [], Dir.glob(dir + "/*")
-      assert_equal ["test/safe_glob_test[/find_me.txt"], Utils.safe_glob(dir, "*")
-    end
-
-    should "return the same data to #glob" do
-      dir = "test"
-      assert_equal Dir.glob(dir + "/*"), Utils.safe_glob(dir, "*")
-      assert_equal Dir.glob(dir + "/**/*"), Utils.safe_glob(dir, "**/*")
-    end
-
-    should "return the same data to #glob if dir is not found" do
-      dir = "dir_not_exist"
-      assert_equal [], Utils.safe_glob(dir, "*")
-      assert_equal Dir.glob(dir + "/*"), Utils.safe_glob(dir, "*")
-    end
-
-    should "return the same data to #glob if pattern is blank" do
-      dir = "test"
-      assert_equal [dir], Utils.safe_glob(dir, "")
-      assert_equal Dir.glob(dir), Utils.safe_glob(dir, "")
-      assert_equal Dir.glob(dir), Utils.safe_glob(dir, nil)
-    end
-
-    should "return the same data to #glob if flag is given" do
-      dir = "test"
-      assert_equal Dir.glob(dir + "/*", File::FNM_DOTMATCH),
-                   Utils.safe_glob(dir, "*", File::FNM_DOTMATCH)
-    end
-
-    should "support pattern as an array to support windows" do
-      dir = "test"
-      assert_equal Dir.glob(dir + "/**/*"), Utils.safe_glob(dir, ["**", "*"])
-    end
+  def test_timeout_default_execption
+    m = WEBrick::Utils
+    assert_raise(Timeout::Error){ m.timeout(0.01){ sleep } }
+    assert_expired(m)
   end
 
+  def test_timeout_custom_exception
+    m = WEBrick::Utils
+    ex = EX
+    assert_raise(ex){ m.timeout(0.01, ex){ sleep } }
+    assert_expired(m)
+  end
+
+  def test_nested_timeout_inner_custom_exception
+    m = WEBrick::Utils
+    ex = EX
+    i = 0
+    assert_raise(ex){
+      m.timeout(10){
+        m.timeout(0.01, ex){ i += 1; sleep }
+      }
+      sleep
+    }
+    assert_equal(1, i)
+    assert_expired(m)
+  end
+
+  def test_nested_timeout_outer_custom_exception
+    m = WEBrick::Utils
+    ex = EX
+    i = 0
+    assert_raise(Timeout::Error){
+      m.timeout(0.01){
+        m.timeout(1.0, ex){ i += 1; sleep }
+      }
+      sleep
+    }
+    assert_equal(1, i)
+    assert_expired(m)
+  end
+
+  def test_create_listeners
+    addr = listener_address(0)
+    port = addr.slice!(1)
+    assert_kind_of(Integer, port, "dynamically chosen port number")
+    assert_equal(["AF_INET", "127.0.0.1", "127.0.0.1"], addr)
+
+    assert_equal(["AF_INET", port, "127.0.0.1", "127.0.0.1"],
+                 listener_address(port),
+                 "specific port number")
+
+    assert_equal(["AF_INET", port, "127.0.0.1", "127.0.0.1"],
+                 listener_address(port.to_s),
+                 "specific port number string")
+  end
+
+  def listener_address(port)
+    listeners = WEBrick::Utils.create_listeners("127.0.0.1", port)
+    srv = listeners.first
+    assert_kind_of TCPServer, srv
+    srv.addr
+  ensure
+    listeners.each(&:close) if listeners
+  end
 end

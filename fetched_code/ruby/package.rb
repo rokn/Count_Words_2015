@@ -1,104 +1,144 @@
-module Spree
-  module Stock
-    class Package
-      attr_reader :stock_location, :contents
-      attr_accessor :shipping_rates
+# frozen_string_literal: false
+#
+# tk/package.rb : package command
+#
+require 'tk'
 
-      def initialize(stock_location, contents=[])
-        @stock_location = stock_location
-        @contents = contents
-        @shipping_rates = Array.new
+module TkPackage
+  include TkCore
+  extend TkPackage
+
+  TkCommandNames = ['package'.freeze].freeze
+
+  def add_path(path)
+    Tk::AUTO_PATH.value = Tk::AUTO_PATH.to_a << path
+  end
+
+  def forget(package)
+    tk_call('package', 'forget', package)
+    nil
+  end
+
+  def if_needed(pkg, ver, *arg, &b)
+    size = arg.size
+
+    if size==0 && !b
+      # proc info
+      procedure(tk_call('package', 'ifneeded', pkg, ver))
+
+    elsif size==0 && b
+      # set proc
+      cmd = proc(&b)
+      tk_call('package', 'ifneeded', pkg, ver, cmd)
+      cmd
+
+    elsif size==1 && !b
+      # set proc
+      cmd = arg[0]
+      if cmd
+        tk_call('package', 'ifneeded', pkg, ver, cmd)
+        cmd
+      else
+        # remove proc
+        tk_call('package', 'ifneeded', pkg, ver, '')
+        nil
       end
 
-      def add(inventory_unit, state = :on_hand)
-        contents << ContentItem.new(inventory_unit, state) unless find_item(inventory_unit)
-      end
-
-      def add_multiple(inventory_units, state = :on_hand)
-        inventory_units.each { |inventory_unit| add(inventory_unit, state) }
-      end
-
-      def remove(inventory_unit)
-        item = find_item(inventory_unit)
-        @contents -= [item] if item
-      end
-
-      # Fix regression that removed package.order.
-      # Find it dynamically through an inventory_unit.
-      def order
-        contents.detect {|item| !!item.try(:inventory_unit).try(:order) }.try(:inventory_unit).try(:order)
-      end
-
-      def weight
-        contents.sum(&:weight)
-      end
-
-      def on_hand
-        contents.select(&:on_hand?)
-      end
-
-      def backordered
-        contents.select(&:backordered?)
-      end
-
-      def find_item(inventory_unit, state = nil)
-        contents.detect do |item|
-          item.inventory_unit == inventory_unit &&
-            (!state || item.state.to_s == state.to_s)
-        end
-      end
-
-      def quantity(state = nil)
-        matched_contents = state.nil? ? contents : contents.select { |c| c.state.to_s == state.to_s }
-        matched_contents.map(&:quantity).sum
-      end
-
-      def empty?
-        quantity == 0
-      end
-
-      def currency
-        order.currency
-      end
-
-      def shipping_categories
-        contents.map { |item| item.variant.shipping_category }.compact.uniq
-      end
-
-      def shipping_methods
-        shipping_categories.map(&:shipping_methods).reduce(:&).to_a
-      end
-
-      def inspect
-        contents.map do |content_item|
-          "#{content_item.variant.name} #{content_item.state}"
-        end.join(' / ')
-      end
-
-      def to_shipment
-        # At this point we should only have one content item per inventory unit
-        # across the entire set of inventory units to be shipped, which has been
-        # taken care of by the Prioritizer
-        contents.each { |content_item| content_item.inventory_unit.state = content_item.state.to_s }
-
-        Spree::Shipment.new(
-          stock_location: stock_location,
-          shipping_rates: shipping_rates,
-          inventory_units: contents.map(&:inventory_unit)
-        )
-      end
-
-      def contents_by_weight
-        contents.sort { |x, y| y.weight <=> x.weight }
-      end
-
-      def volume
-        contents.sum(&:volume)
-      end
-
-      def dimension
-        contents.sum(&:dimension)
-      end
+    else
+      fail ArgumentError, 'too many arguments'
     end
+  end
+
+  def names
+    tk_split_simplelist(tk_call('package', 'names'))
+  end
+
+  def provide(package, version=nil)
+    if version
+      tk_call('package', 'provide', package, version)
+    end
+    if (ret = tk_call('package', 'provide', package)) == ''
+      nil
+    else
+      ret
+    end
+  end
+
+  def present(package, version=None)
+    begin
+      tk_call('package', 'present', package, version)
+    rescue => e
+      fail e.class, 'TkPackage ' << e.message
+    end
+  end
+
+  def present_exact(package, version)
+    begin
+      tk_call('package', 'present', '-exact', package, version)
+    rescue => e
+      fail e.class, 'TkPackage ' << e.message
+    end
+  end
+
+  def require(package, version=None)
+    begin
+      tk_call('package', 'require', package, version)
+    rescue => e
+      fail e.class, 'TkPackage ' << e.message
+    end
+  end
+
+  def require_exact(package, version)
+    begin
+      tk_call('package', 'require', '-exact', package, version)
+    rescue => e
+      fail e.class, 'TkPackage ' << e.message
+    end
+  end
+
+  def unknown_proc(*arg, &b)
+    size = arg.size
+
+    if size==0 && !b
+      # proc info
+      procedure(tk_call('package', 'unknown'))
+
+    elsif size==0 && b
+      # set proc
+      cmd = proc(&b)
+      tk_call('package', 'unknown', cmd)
+      cmd
+
+    elsif size==1 && !b
+      # set proc
+      cmd = arg[0]
+      if cmd
+        tk_call('package', 'unknown', cmd)
+        cmd
+      else
+        # remove proc
+        tk_call('package', 'unknown', '')
+        nil
+      end
+
+    else
+      fail ArgumentError, 'too many arguments'
+    end
+  end
+
+  def versions(package)
+    tk_split_simplelist(tk_call('package', 'versions', package))
+  end
+
+  def vcompare(version1, version2)
+    number(tk_call('package', 'vcompare', version1, version2))
+  end
+
+  def vsatisfies(version1, version2)
+    bool(tk_call('package', 'vsatisfies', version1, version2))
+  end
+
+  def prefer(setting = None)
+    tk_call('package', 'prefer', setting)
   end
 end

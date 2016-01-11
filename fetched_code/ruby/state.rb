@@ -1,38 +1,52 @@
-module Spree
-  class State < Spree::Base
-    belongs_to :country, class_name: 'Spree::Country'
-    has_many :addresses, dependent: :nullify
+# frozen_string_literal: false
+module Gem::Resolver::Molinillo
+  # A state that a {Resolution} can be in
+  # @attr [String] name
+  # @attr [Array<Object>] requirements
+  # @attr [DependencyGraph] activated
+  # @attr [Object] requirement
+  # @attr [Object] possibility
+  # @attr [Integer] depth
+  # @attr [Set<Object>] conflicts
+  ResolutionState = Struct.new(
+    :name,
+    :requirements,
+    :activated,
+    :requirement,
+    :possibilities,
+    :depth,
+    :conflicts
+  )
 
-    has_many :zone_members,
-             -> { where(zoneable_type: 'Spree::State') },
-             class_name: 'Spree::ZoneMember',
-             dependent: :destroy,
-             foreign_key: :zoneable_id
-
-    has_many :zones, through: :zone_members, class_name: 'Spree::Zone'
-
-    validates :country, :name, presence: true
-
-    def self.find_all_by_name_or_abbr(name_or_abbr)
-      where('name = ? OR abbr = ?', name_or_abbr, name_or_abbr)
+  class ResolutionState
+    # Returns an empty resolution state
+    # @return [ResolutionState] an empty state
+    def self.empty
+      new(nil, [], DependencyGraph.new, nil, nil, 0, Set.new)
     end
+  end
 
-    # table of { country.id => [ state.id , state.name ] }, arrays sorted by name
-    # blank is added elsewhere, if needed
-    def self.states_group_by_country_id
-      state_info = Hash.new { |h, k| h[k] = [] }
-      self.order(:name).each { |state|
-        state_info[state.country_id.to_s].push [state.id, state.name]
-      }
-      state_info
+  # A state that encapsulates a set of {#requirements} with an {Array} of
+  # possibilities
+  class DependencyState < ResolutionState
+    # Removes a possibility from `self`
+    # @return [PossibilityState] a state with a single possibility,
+    #  the possibility that was removed from `self`
+    def pop_possibility_state
+      PossibilityState.new(
+        name,
+        requirements.dup,
+        activated.dup,
+        requirement,
+        [possibilities.pop],
+        depth + 1,
+        conflicts.dup
+      )
     end
+  end
 
-    def <=>(other)
-      name <=> other.name
-    end
-
-    def to_s
-      name
-    end
+  # A state that encapsulates a single possibility to fulfill the given
+  # {#requirement}
+  class PossibilityState < ResolutionState
   end
 end

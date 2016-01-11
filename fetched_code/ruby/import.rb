@@ -1,249 +1,315 @@
-# Redmine - project management software
-# Copyright (C) 2006-2015  Jean-Philippe Lang
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+# frozen_string_literal: false
+require 'fiddle'
+require 'fiddle/struct'
+require 'fiddle/cparser'
 
-require 'csv'
+module Fiddle
 
-class Import < ActiveRecord::Base
-  has_many :items, :class_name => 'ImportItem', :dependent => :delete_all
-  belongs_to :user
-  serialize :settings
-
-  before_destroy :remove_file
-
-  validates_presence_of :filename, :user_id
-  validates_length_of :filename, :maximum => 255
-
-  DATE_FORMATS = [
-    '%Y-%m-%d',
-    '%d/%m/%Y',
-    '%m/%d/%Y',
-    '%d.%m.%Y',
-    '%d-%m-%Y'
-  ]
-
-  def initialize(*args)
-    super
-    self.settings ||= {}
-  end
-
-  def file=(arg)
-    return unless arg.present? && arg.size > 0
-
-    self.filename = generate_filename
-    Redmine::Utils.save_upload(arg, filepath)
-  end
-
-  def set_default_settings
-    separator = lu(user, :general_csv_separator)
-    if file_exists?
-      begin
-        content = File.read(filepath, 256, "rb")
-        separator = [',', ';'].sort_by {|sep| content.count(sep) }.last
-      rescue Exception => e
-      end
+  # Used internally by Fiddle::Importer
+  class CompositeHandler
+    # Create a new handler with the open +handlers+
+    #
+    # Used internally by Fiddle::Importer.dlload
+    def initialize(handlers)
+      @handlers = handlers
     end
-    wrapper = '"'
-    encoding = lu(user, :general_csv_encoding)
 
-    date_format = lu(user, "date.formats.default", :default => "foo")
-    date_format = DATE_FORMATS.first unless DATE_FORMATS.include?(date_format)
-
-    self.settings.merge!(
-      'separator' => separator,
-      'wrapper' => wrapper,
-      'encoding' => encoding,
-      'date_format' => date_format
-    )
-  end
-
-  def to_param
-    filename
-  end
-
-  # Returns the full path of the file to import
-  # It is stored in tmp/imports with a random hex as filename
-  def filepath
-    if filename.present? && filename =~ /\A[0-9a-f]+\z/
-      File.join(Rails.root, "tmp", "imports", filename)
-    else
-      nil
+    # Array of the currently loaded libraries.
+    def handlers()
+      @handlers
     end
-  end
 
-  # Returns true if the file to import exists
-  def file_exists?
-    filepath.present? && File.exists?(filepath)
-  end
-
-  # Returns the headers as an array that
-  # can be used for select options
-  def columns_options(default=nil)
-    i = -1
-    headers.map {|h| [h, i+=1]}
-  end
-
-  # Parses the file to import and updates the total number of items
-  def parse_file
-    count = 0
-    read_items {|row, i| count=i}
-    update_attribute :total_items, count
-    count
-  end
-
-  # Reads the items to import and yields the given block for each item
-  def read_items
-    i = 0
-    headers = true
-    read_rows do |row|
-      if i == 0 && headers
-        headers = false
-        next
-      end
-      i+= 1
-      yield row, i if block_given?
-    end
-  end
-
-  # Returns the count first rows of the file (including headers)
-  def first_rows(count=4)
-    rows = []
-    read_rows do |row|
-      rows << row
-      break if rows.size >= count
-    end
-    rows
-  end
-
-  # Returns an array of headers
-  def headers
-    first_rows(1).first || []
-  end
-
-  # Returns the mapping options
-  def mapping
-    settings['mapping'] || {}
-  end
-
-  # Imports items and returns the position of the last processed item
-  def run(options={})
-    max_items = options[:max_items]
-    max_time = options[:max_time]
-    current = 0
-    imported = 0
-    resume_after = items.maximum(:position) || 0
-    interrupted = false
-    started_on = Time.now
-
-    read_items do |row, position|
-      if (max_items && imported >= max_items) || (max_time && Time.now >= started_on + max_time)
-        interrupted = true
-        break
-      end
-      if position > resume_after
-        item = items.build
-        item.position = position
-
-        if object = build_object(row)
-          if object.save
-            item.obj_id = object.id
-          else
-            item.message = object.errors.full_messages.join("\n")
+    # Returns the address as an Integer from any handlers with the function
+    # named +symbol+.
+    #
+    # Raises a DLError if the handle is closed.
+    def sym(symbol)
+      @handlers.each{|handle|
+        if( handle )
+          begin
+            addr = handle.sym(symbol)
+            return addr
+          rescue DLError
           end
         end
+      }
+      return nil
+    end
 
-        item.save!
-        imported += 1
+    # See Fiddle::CompositeHandler.sym
+    def [](symbol)
+      sym(symbol)
+    end
+  end
+
+  # A DSL that provides the means to dynamically load libraries and build
+  # modules around them including calling extern functions within the C
+  # library that has been loaded.
+  #
+  # == Example
+  #
+  #   require 'fiddle'
+  #   require 'fiddle/import'
+  #
+  #   module LibSum
+  #   	extend Fiddle::Importer
+  #   	dlload './libsum.so'
+  #   	extern 'double sum(double*, int)'
+  #   	extern 'double split(double)'
+  #   end
+  #
+  module Importer
+    include Fiddle
+    include CParser
+    extend Importer
+
+    # Creates an array of handlers for the given +libs+, can be an instance of
+    # Fiddle::Handle, Fiddle::Importer, or will create a new instance of
+    # Fiddle::Handle using Fiddle.dlopen
+    #
+    # Raises a DLError if the library cannot be loaded.
+    #
+    # See Fiddle.dlopen
+    def dlload(*libs)
+      handles = libs.collect{|lib|
+        case lib
+        when nil
+          nil
+        when Handle
+          lib
+        when Importer
+          lib.handlers
+        else
+          begin
+            Fiddle.dlopen(lib)
+          rescue DLError
+            raise(DLError, "can't load #{lib}")
+          end
+        end
+      }.flatten()
+      @handler = CompositeHandler.new(handles)
+      @func_map = {}
+      @type_alias = {}
+    end
+
+    # Sets the type alias for +alias_type+ as +orig_type+
+    def typealias(alias_type, orig_type)
+      @type_alias[alias_type] = orig_type
+    end
+
+    # Returns the sizeof +ty+, using Fiddle::Importer.parse_ctype to determine
+    # the C type and the appropriate Fiddle constant.
+    def sizeof(ty)
+      case ty
+      when String
+        ty = parse_ctype(ty, @type_alias).abs()
+        case ty
+        when TYPE_CHAR
+          return SIZEOF_CHAR
+        when TYPE_SHORT
+          return SIZEOF_SHORT
+        when TYPE_INT
+          return SIZEOF_INT
+        when TYPE_LONG
+          return SIZEOF_LONG
+        when TYPE_LONG_LONG
+          return SIZEOF_LONG_LONG
+        when TYPE_FLOAT
+          return SIZEOF_FLOAT
+        when TYPE_DOUBLE
+          return SIZEOF_DOUBLE
+        when TYPE_VOIDP
+          return SIZEOF_VOIDP
+        else
+          raise(DLError, "unknown type: #{ty}")
+        end
+      when Class
+        if( ty.instance_methods().include?(:to_ptr) )
+          return ty.size()
+        end
       end
-      current = position
+      return Pointer[ty].size()
     end
 
-    if imported == 0 || interrupted == false
-      if total_items.nil?
-        update_attribute :total_items, current
+    def parse_bind_options(opts)
+      h = {}
+      while( opt = opts.shift() )
+        case opt
+        when :stdcall, :cdecl
+          h[:call_type] = opt
+        when :carried, :temp, :temporal, :bind
+          h[:callback_type] = opt
+          h[:carrier] = opts.shift()
+        else
+          h[opt] = true
+        end
       end
-      update_attribute :finished, true
-      remove_file
+      h
     end
+    private :parse_bind_options
 
-    current
-  end
+    # :stopdoc:
+    CALL_TYPE_TO_ABI = Hash.new { |h, k|
+      raise RuntimeError, "unsupported call type: #{k}"
+    }.merge({ :stdcall => (Function::STDCALL rescue Function::DEFAULT),
+              :cdecl   => Function::DEFAULT,
+              nil      => Function::DEFAULT
+            }).freeze
+    private_constant :CALL_TYPE_TO_ABI
+    # :startdoc:
 
-  def unsaved_items
-    items.where(:obj_id => nil)
-  end
-
-  def saved_items
-    items.where("obj_id IS NOT NULL")
-  end
-
-  private
-
-  def read_rows
-    return unless file_exists?
-
-    csv_options = {:headers => false}
-    csv_options[:encoding] = settings['encoding'].to_s.presence || 'UTF-8'
-    separator = settings['separator'].to_s
-    csv_options[:col_sep] = separator if separator.size == 1
-    wrapper = settings['wrapper'].to_s
-    csv_options[:quote_char] = wrapper if wrapper.size == 1
-
-    CSV.foreach(filepath, csv_options) do |row|
-      yield row if block_given?
-    end
-  end
-
-  def row_value(row, key)
-    if index = mapping[key].presence
-      row[index.to_i].presence
-    end
-  end
-
-  def row_date(row, key)
-    if s = row_value(row, key)
-      format = settings['date_format']
-      format = DATE_FORMATS.first unless DATE_FORMATS.include?(format)
-      Date.strptime(s, format) rescue s
-    end
-  end
-
-  # Builds a record for the given row and returns it
-  # To be implemented by subclasses
-  def build_object(row)
-  end
-
-  # Generates a filename used to store the import file
-  def generate_filename
-    Redmine::Utils.random_hex(16)
-  end
-
-  # Deletes the import file
-  def remove_file
-    if file_exists?
+    # Creates a global method from the given C +signature+.
+    def extern(signature, *opts)
+      symname, ctype, argtype = parse_signature(signature, @type_alias)
+      opt = parse_bind_options(opts)
+      f = import_function(symname, ctype, argtype, opt[:call_type])
+      name = symname.gsub(/@.+/,'')
+      @func_map[name] = f
+      # define_method(name){|*args,&block| f.call(*args,&block)}
       begin
-        File.delete filepath
-      rescue Exception => e
-        logger.error "Unable to delete file #{filepath}: #{e.message}" if logger
+        /^(.+?):(\d+)/ =~ caller.first
+        file, line = $1, $2.to_i
+      rescue
+        file, line = __FILE__, __LINE__+3
       end
+      module_eval(<<-EOS, file, line)
+        def #{name}(*args, &block)
+          @func_map['#{name}'].call(*args,&block)
+        end
+      EOS
+      module_function(name)
+      f
     end
-  end
 
-  # Returns true if value is a string that represents a true value
-  def yes?(value)
-    value == lu(user, :general_text_yes) || value == '1'
+    # Creates a global method from the given C +signature+ using the given
+    # +opts+ as bind parameters with the given block.
+    def bind(signature, *opts, &blk)
+      name, ctype, argtype = parse_signature(signature, @type_alias)
+      h = parse_bind_options(opts)
+      case h[:callback_type]
+      when :bind, nil
+        f = bind_function(name, ctype, argtype, h[:call_type], &blk)
+      else
+        raise(RuntimeError, "unknown callback type: #{h[:callback_type]}")
+      end
+      @func_map[name] = f
+      #define_method(name){|*args,&block| f.call(*args,&block)}
+      begin
+        /^(.+?):(\d+)/ =~ caller.first
+        file, line = $1, $2.to_i
+      rescue
+        file, line = __FILE__, __LINE__+3
+      end
+      module_eval(<<-EOS, file, line)
+        def #{name}(*args,&block)
+          @func_map['#{name}'].call(*args,&block)
+        end
+      EOS
+      module_function(name)
+      f
+    end
+
+    # Creates a class to wrap the C struct described by +signature+.
+    #
+    #   MyStruct = struct ['int i', 'char c']
+    def struct(signature)
+      tys, mems = parse_struct_signature(signature, @type_alias)
+      Fiddle::CStructBuilder.create(CStruct, tys, mems)
+    end
+
+    # Creates a class to wrap the C union described by +signature+.
+    #
+    #   MyUnion = union ['int i', 'char c']
+    def union(signature)
+      tys, mems = parse_struct_signature(signature, @type_alias)
+      Fiddle::CStructBuilder.create(CUnion, tys, mems)
+    end
+
+    # Returns the function mapped to +name+, that was created by either
+    # Fiddle::Importer.extern or Fiddle::Importer.bind
+    def [](name)
+      @func_map[name]
+    end
+
+    # Creates a class to wrap the C struct with the value +ty+
+    #
+    # See also Fiddle::Importer.struct
+    def create_value(ty, val=nil)
+      s = struct([ty + " value"])
+      ptr = s.malloc()
+      if( val )
+        ptr.value = val
+      end
+      return ptr
+    end
+    alias value create_value
+
+    # Returns a new instance of the C struct with the value +ty+ at the +addr+
+    # address.
+    def import_value(ty, addr)
+      s = struct([ty + " value"])
+      ptr = s.new(addr)
+      return ptr
+    end
+
+
+    # The Fiddle::CompositeHandler instance
+    #
+    # Will raise an error if no handlers are open.
+    def handler
+      @handler or raise "call dlload before importing symbols and functions"
+    end
+
+    # Returns a new Fiddle::Pointer instance at the memory address of the given
+    # +name+ symbol.
+    #
+    # Raises a DLError if the +name+ doesn't exist.
+    #
+    # See Fiddle::CompositeHandler.sym and Fiddle::Handle.sym
+    def import_symbol(name)
+      addr = handler.sym(name)
+      if( !addr )
+        raise(DLError, "cannot find the symbol: #{name}")
+      end
+      Pointer.new(addr)
+    end
+
+    # Returns a new Fiddle::Function instance at the memory address of the given
+    # +name+ function.
+    #
+    # Raises a DLError if the +name+ doesn't exist.
+    #
+    # * +argtype+ is an Array of arguments, passed to the +name+ function.
+    # * +ctype+ is the return type of the function
+    # * +call_type+ is the ABI of the function
+    #
+    # See also Fiddle:Function.new
+    #
+    # See Fiddle::CompositeHandler.sym and Fiddle::Handler.sym
+    def import_function(name, ctype, argtype, call_type = nil)
+      addr = handler.sym(name)
+      if( !addr )
+        raise(DLError, "cannot find the function: #{name}()")
+      end
+      Function.new(addr, argtype, ctype, CALL_TYPE_TO_ABI[call_type],
+                   name: name)
+    end
+
+    # Returns a new closure wrapper for the +name+ function.
+    #
+    # * +ctype+ is the return type of the function
+    # * +argtype+ is an Array of arguments, passed to the callback function
+    # * +call_type+ is the abi of the closure
+    # * +block+ is passed to the callback
+    #
+    # See Fiddle::Closure
+    def bind_function(name, ctype, argtype, call_type = nil, &block)
+      abi = CALL_TYPE_TO_ABI[call_type]
+      closure = Class.new(Fiddle::Closure) {
+        define_method(:call, block)
+      }.new(ctype, argtype, abi)
+
+      Function.new(closure, argtype, ctype, abi, name: name)
+    end
   end
 end

@@ -1,23 +1,17 @@
-module Spree
-  class Property < Spree::Base
-    has_many :property_prototypes, class_name: 'Spree::PropertyPrototype'
-    has_many :prototypes, through: :property_prototypes, class_name: 'Spree::Prototype'
-
-    has_many :product_properties, dependent: :delete_all, inverse_of: :property
-    has_many :products, through: :product_properties
-
-    validates :name, :presentation, presence: true
-
-    scope :sorted, -> { order(:name) }
-
-    after_touch :touch_all_products
-
-    self.whitelisted_ransackable_attributes = ['presentation']
-
-    private
-
-    def touch_all_products
-      products.update_all(updated_at: Time.current)
-    end
+# frozen_string_literal: false
+# OLEProperty
+# helper class of Property with arguments.
+class OLEProperty
+  def initialize(obj, dispid, gettypes, settypes)
+    @obj = obj
+    @dispid = dispid
+    @gettypes = gettypes
+    @settypes = settypes
+  end
+  def [](*args)
+    @obj._getproperty(@dispid, args, @gettypes)
+  end
+  def []=(*args)
+    @obj._setproperty(@dispid, args, @settypes)
   end
 end

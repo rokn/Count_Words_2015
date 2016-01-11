@@ -1,227 +1,285 @@
-require "dependable"
-require "dependency"
-require "dependencies"
-require "build_environment"
+# frozen_string_literal: false
+require "rubygems/version"
+require "rubygems/deprecate"
 
-# A base class for non-formula requirements needed by formulae.
-# A "fatal" requirement is one that will fail the build if it is not present.
-# By default, Requirements are non-fatal.
-class Requirement
-  include Dependable
+# If we're being loaded after yaml was already required, then
+# load our yaml + workarounds now.
+Gem.load_yaml if defined? ::YAML
 
-  attr_reader :tags, :name, :cask, :download, :default_formula
+##
+# A Requirement is a set of one or more version restrictions. It supports a
+# few (<tt>=, !=, >, <, >=, <=, ~></tt>) different restriction operators.
+#
+# See Gem::Version for a description on how versions and requirements work
+# together in RubyGems.
 
-  def initialize(tags = [])
-    @default_formula = self.class.default_formula
-    @cask ||= self.class.cask
-    @download ||= self.class.download
-    tags.each do |tag|
-      next unless tag.is_a? Hash
-      @cask ||= tag[:cask]
-      @download ||= tag[:download]
-    end
-    @tags = tags
-    @tags << :build if self.class.build
-    @name ||= infer_name
-  end
+class Gem::Requirement
+  OPS = { #:nodoc:
+    "="  =>  lambda { |v, r| v == r },
+    "!=" =>  lambda { |v, r| v != r },
+    ">"  =>  lambda { |v, r| v >  r },
+    "<"  =>  lambda { |v, r| v <  r },
+    ">=" =>  lambda { |v, r| v >= r },
+    "<=" =>  lambda { |v, r| v <= r },
+    "~>" =>  lambda { |v, r| v >= r && v.release < r.bump }
+  }
 
-  def option_names
-    [name]
-  end
+  SOURCE_SET_REQUIREMENT = Struct.new(:for_lockfile).new "!" # :nodoc:
 
-  # The message to show when the requirement is not met.
-  def message
-    s = ""
-    if cask
-      s +=  <<-EOS.undent
+  quoted  = OPS.keys.map { |k| Regexp.quote k }.join "|"
+  PATTERN_RAW = "\\s*(#{quoted})?\\s*(#{Gem::Version::VERSION_PATTERN})\\s*" # :nodoc:
 
-        You can install with Homebrew Cask:
-          brew install Caskroom/cask/#{cask}
-      EOS
-    end
+  ##
+  # A regular expression that matches a requirement
 
-    if download
-      s += <<-EOS.undent
+  PATTERN = /\A#{PATTERN_RAW}\z/
 
-        You can download from:
-          #{download}
-      EOS
-    end
-    s
-  end
+  ##
+  # The default requirement matches any version
 
-  # Overriding #satisfied? is deprecated.
-  # Pass a block or boolean to the satisfy DSL method instead.
-  def satisfied?
-    result = self.class.satisfy.yielder { |p| instance_eval(&p) }
-    @satisfied_result = result
-    !!result
-  end
+  DefaultRequirement = [">=", Gem::Version.new(0)]
 
-  # Overriding #fatal? is deprecated.
-  # Pass a boolean to the fatal DSL method instead.
-  def fatal?
-    self.class.fatal || false
-  end
+  ##
+  # Raised when a bad requirement is encountered
 
-  def default_formula?
-    self.class.default_formula || false
-  end
+  class BadRequirementError < ArgumentError; end
 
-  # Overriding #modify_build_environment is deprecated.
-  # Pass a block to the the env DSL method instead.
-  # Note: #satisfied? should be called before invoking this method
-  # as the env modifications may depend on its side effects.
-  def modify_build_environment
-    instance_eval(&env_proc) if env_proc
+  ##
+  # Factory method to create a Gem::Requirement object.  Input may be
+  # a Version, a String, or nil.  Intended to simplify client code.
+  #
+  # If the input is "weird", the default version requirement is
+  # returned.
 
-    # XXX If the satisfy block returns a Pathname, then make sure that it
-    # remains available on the PATH. This makes requirements like
-    #   satisfy { which("executable") }
-    # work, even under superenv where "executable" wouldn't normally be on the
-    # PATH.
-    # This is undocumented magic and it should be removed, but we need to add
-    # a way to declare path-based requirements that work with superenv first.
-    if Pathname === @satisfied_result
-      parent = @satisfied_result.parent
-      unless ENV["PATH"].split(File::PATH_SEPARATOR).include?(parent.to_s)
-        ENV.append_path("PATH", parent)
+  def self.create input
+    case input
+    when Gem::Requirement then
+      input
+    when Gem::Version, Array then
+      new input
+    when '!' then
+      source_set
+    else
+      if input.respond_to? :to_str then
+        new [input.to_str]
+      else
+        default
       end
     end
   end
 
-  def env
-    self.class.env
+  ##
+  # A default "version requirement" can surely _only_ be '>= 0'.
+
+  def self.default
+    new '>= 0'
   end
 
-  def env_proc
-    self.class.env_proc
+  ###
+  # A source set requirement, used for Gemfiles and lockfiles
+
+  def self.source_set # :nodoc:
+    SOURCE_SET_REQUIREMENT
   end
 
-  def ==(other)
-    instance_of?(other.class) && name == other.name && tags == other.tags
-  end
-  alias_method :eql?, :==
+  ##
+  # Parse +obj+, returning an <tt>[op, version]</tt> pair. +obj+ can
+  # be a String or a Gem::Version.
+  #
+  # If +obj+ is a String, it can be either a full requirement
+  # specification, like <tt>">= 1.2"</tt>, or a simple version number,
+  # like <tt>"1.2"</tt>.
+  #
+  #     parse("> 1.0")                 # => [">", Gem::Version.new("1.0")]
+  #     parse("1.0")                   # => ["=", Gem::Version.new("1.0")]
+  #     parse(Gem::Version.new("1.0")) # => ["=,  Gem::Version.new("1.0")]
 
-  def hash
-    name.hash ^ tags.hash
-  end
+  def self.parse obj
+    return ["=", obj] if Gem::Version === obj
 
-  def inspect
-    "#<#{self.class.name}: #{name.inspect} #{tags.inspect}>"
-  end
-
-  def to_dependency
-    f = self.class.default_formula
-    raise "No default formula defined for #{inspect}" if f.nil?
-    if HOMEBREW_TAP_FORMULA_REGEX === f
-      TapDependency.new(f, tags, method(:modify_build_environment), name)
-    else
-      Dependency.new(f, tags, method(:modify_build_environment), name)
+    unless PATTERN =~ obj.to_s
+      raise BadRequirementError, "Illformed requirement [#{obj.inspect}]"
     end
+
+    if $1 == ">=" && $2 == "0"
+      DefaultRequirement
+    else
+      [$1 || "=", Gem::Version.new($2)]
+    end
+  end
+
+  ##
+  # An array of requirement pairs. The first element of the pair is
+  # the op, and the second is the Gem::Version.
+
+  attr_reader :requirements #:nodoc:
+
+  ##
+  # Constructs a requirement from +requirements+. Requirements can be
+  # Strings, Gem::Versions, or Arrays of those. +nil+ and duplicate
+  # requirements are ignored. An empty set of +requirements+ is the
+  # same as <tt>">= 0"</tt>.
+
+  def initialize *requirements
+    requirements = requirements.flatten
+    requirements.compact!
+    requirements.uniq!
+
+    if requirements.empty?
+      @requirements = [DefaultRequirement]
+    else
+      @requirements = requirements.map! { |r| self.class.parse r }
+    end
+  end
+
+  ##
+  # Concatenates the +new+ requirements onto this requirement.
+
+  def concat new
+    new = new.flatten
+    new.compact!
+    new.uniq!
+    new = new.map { |r| self.class.parse r }
+
+    @requirements.concat new
+  end
+
+  ##
+  # Formats this requirement for use in a Gem::RequestSet::Lockfile.
+
+  def for_lockfile # :nodoc:
+    return if [DefaultRequirement] == @requirements
+
+    list = requirements.sort_by { |_, version|
+      version
+    }.map { |op, version|
+      "#{op} #{version}"
+    }.uniq
+
+    " (#{list.join ', '})"
+  end
+
+  ##
+  # true if this gem has no requirements.
+
+  def none?
+    if @requirements.size == 1
+      @requirements[0] == DefaultRequirement
+    else
+      false
+    end
+  end
+
+  ##
+  # true if the requirement is for only an exact version
+
+  def exact?
+    return false unless @requirements.size == 1
+    @requirements[0][0] == "="
+  end
+
+  def as_list # :nodoc:
+    requirements.map { |op, version| "#{op} #{version}" }.sort
+  end
+
+  def hash # :nodoc:
+    requirements.sort.hash
+  end
+
+  def marshal_dump # :nodoc:
+    fix_syck_default_key_in_requirements
+
+    [@requirements]
+  end
+
+  def marshal_load array # :nodoc:
+    @requirements = array[0]
+
+    fix_syck_default_key_in_requirements
+  end
+
+  def yaml_initialize(tag, vals) # :nodoc:
+    vals.each do |ivar, val|
+      instance_variable_set "@#{ivar}", val
+    end
+
+    Gem.load_yaml
+    fix_syck_default_key_in_requirements
+  end
+
+  def init_with coder # :nodoc:
+    yaml_initialize coder.tag, coder.map
+  end
+
+  def to_yaml_properties # :nodoc:
+    ["@requirements"]
+  end
+
+  def encode_with coder # :nodoc:
+    coder.add 'requirements', @requirements
+  end
+
+  ##
+  # A requirement is a prerelease if any of the versions inside of it
+  # are prereleases
+
+  def prerelease?
+    requirements.any? { |r| r.last.prerelease? }
+  end
+
+  def pretty_print q # :nodoc:
+    q.group 1, 'Gem::Requirement.new(', ')' do
+      q.pp as_list
+    end
+  end
+
+  ##
+  # True if +version+ satisfies this Requirement.
+
+  def satisfied_by? version
+    raise ArgumentError, "Need a Gem::Version: #{version.inspect}" unless
+      Gem::Version === version
+    # #28965: syck has a bug with unquoted '=' YAML.loading as YAML::DefaultKey
+    requirements.all? { |op, rv| (OPS[op] || OPS["="]).call version, rv }
+  end
+
+  alias :=== :satisfied_by?
+  alias :=~ :satisfied_by?
+
+  ##
+  # True if the requirement will not always match the latest version.
+
+  def specific?
+    return true if @requirements.length > 1 # GIGO, > 1, > 2 is silly
+
+    not %w[> >=].include? @requirements.first.first # grab the operator
+  end
+
+  def to_s # :nodoc:
+    as_list.join ", "
+  end
+
+  def == other # :nodoc:
+    Gem::Requirement === other and to_s == other.to_s
   end
 
   private
 
-  def infer_name
-    klass = self.class.name || self.class.to_s
-    klass.sub!(/(Dependency|Requirement)$/, "")
-    klass.sub!(/^(\w+::)*/, "")
-    klass.downcase
-  end
+  def fix_syck_default_key_in_requirements # :nodoc:
+    Gem.load_yaml
 
-  def which(cmd)
-    super(cmd, ORIGINAL_PATHS.join(File::PATH_SEPARATOR))
-  end
-
-  def which_all(cmd)
-    super(cmd, ORIGINAL_PATHS.join(File::PATH_SEPARATOR))
-  end
-
-  class << self
-    include BuildEnvironmentDSL
-
-    attr_reader :env_proc
-    attr_rw :fatal, :default_formula
-    attr_rw :cask, :download
-    # build is deprecated, use `depends_on <requirement> => :build` instead
-    attr_rw :build
-
-    def satisfy(options = {}, &block)
-      @satisfied ||= Requirement::Satisfier.new(options, &block)
-    end
-
-    def env(*settings, &block)
-      if block_given?
-        @env_proc = block
-      else
-        super
+    # Fixup the Syck DefaultKey bug
+    @requirements.each do |r|
+      if r[0].kind_of? Gem::SyckDefaultKey
+        r[0] = "="
       end
     end
   end
+end
 
-  class Satisfier
-    def initialize(options, &block)
-      case options
-      when Hash
-        @options = { :build_env => true }
-        @options.merge!(options)
-      else
-        @satisfied = options
-      end
-      @proc = block
-    end
+class Gem::Version
+  # This is needed for compatibility with older yaml
+  # gemspecs.
 
-    def yielder
-      if instance_variable_defined?(:@satisfied)
-        @satisfied
-      elsif @options[:build_env]
-        require "extend/ENV"
-        ENV.with_build_environment { yield @proc }
-      else
-        yield @proc
-      end
-    end
-  end
-
-  class << self
-    # Expand the requirements of dependent recursively, optionally yielding
-    # [dependent, req] pairs to allow callers to apply arbitrary filters to
-    # the list.
-    # The default filter, which is applied when a block is not given, omits
-    # optionals and recommendeds based on what the dependent has asked for.
-    def expand(dependent, &block)
-      reqs = Requirements.new
-
-      formulae = dependent.recursive_dependencies.map(&:to_formula)
-      formulae.unshift(dependent)
-
-      formulae.each do |f|
-        f.requirements.each do |req|
-          if prune?(f, req, &block)
-            next
-          else
-            reqs << req
-          end
-        end
-      end
-
-      reqs
-    end
-
-    def prune?(dependent, req, &_block)
-      catch(:prune) do
-        if block_given?
-          yield dependent, req
-        elsif req.optional? || req.recommended?
-          prune unless dependent.build.with?(req)
-        end
-      end
-    end
-
-    # Used to prune requirements when calling expand with a block.
-    def prune
-      throw(:prune, true)
-    end
-  end
+  Requirement = Gem::Requirement # :nodoc:
 end

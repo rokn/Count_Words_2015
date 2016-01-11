@@ -1,57 +1,72 @@
-require 'set'
-require 'active_support/core_ext/module/attribute_accessors'
-
-module ActionView
-  class Template
-    class Types
-      class Type
-        cattr_accessor :types
-        self.types = Set.new
-
-        def self.register(*t)
-          types.merge(t.map(&:to_s))
-        end
-
-        register :html, :text, :js, :css,  :xml, :json
-
-        def self.[](type)
-          return type if type.is_a?(self)
-
-          if type.is_a?(Symbol) || types.member?(type.to_s)
-            new(type)
-          end
-        end
-
-        attr_reader :symbol
-
-        def initialize(symbol)
-          @symbol = symbol.to_sym
-        end
-
-        delegate :to_s, :to_sym, :to => :symbol
-        alias to_str to_s
-
-        def ref
-          to_sym || to_s
-        end
-
-        def ==(type)
-          return false if type.blank?
-          symbol.to_sym == type.to_sym
-        end
-      end
-
-      cattr_accessor :type_klass
-
-      def self.delegate_to(klass)
-        self.type_klass = klass
-      end
-
-      delegate_to Type
-
-      def self.[](type)
-        type_klass[type]
-      end
+# frozen_string_literal: false
+module Fiddle
+  # Adds Windows type aliases to the including class for use with
+  # Fiddle::Importer.
+  #
+  # The aliases added are:
+  # * ATOM
+  # * BOOL
+  # * BYTE
+  # * DWORD
+  # * DWORD32
+  # * DWORD64
+  # * HANDLE
+  # * HDC
+  # * HINSTANCE
+  # * HWND
+  # * LPCSTR
+  # * LPSTR
+  # * PBYTE
+  # * PDWORD
+  # * PHANDLE
+  # * PVOID
+  # * PWORD
+  # * UCHAR
+  # * UINT
+  # * ULONG
+  # * WORD
+  module Win32Types
+    def included(m) # :nodoc:
+      m.module_eval{
+        typealias "DWORD", "unsigned long"
+        typealias "PDWORD", "unsigned long *"
+        typealias "DWORD32", "unsigned long"
+        typealias "DWORD64", "unsigned long long"
+        typealias "WORD", "unsigned short"
+        typealias "PWORD", "unsigned short *"
+        typealias "BOOL", "int"
+        typealias "ATOM", "int"
+        typealias "BYTE", "unsigned char"
+        typealias "PBYTE", "unsigned char *"
+        typealias "UINT", "unsigned int"
+        typealias "ULONG", "unsigned long"
+        typealias "UCHAR", "unsigned char"
+        typealias "HANDLE", "uintptr_t"
+        typealias "PHANDLE", "void*"
+        typealias "PVOID", "void*"
+        typealias "LPCSTR", "char*"
+        typealias "LPSTR", "char*"
+        typealias "HINSTANCE", "unsigned int"
+        typealias "HDC", "unsigned int"
+        typealias "HWND", "unsigned int"
+      }
     end
+    module_function :included
+  end
+
+  # Adds basic type aliases to the including class for use with Fiddle::Importer.
+  #
+  # The aliases added are +uint+ and +u_int+ (<tt>unsigned int</tt>) and
+  # +ulong+ and +u_long+ (<tt>unsigned long</tt>)
+  module BasicTypes
+    def included(m) # :nodoc:
+      m.module_eval{
+        typealias "uint", "unsigned int"
+        typealias "u_int", "unsigned int"
+        typealias "ulong", "unsigned long"
+        typealias "u_long", "unsigned long"
+      }
+    end
+    module_function :included
   end
 end

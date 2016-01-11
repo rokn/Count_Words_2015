@@ -59,14 +59,20 @@ class WordCounter
 	def self.count_words text, type, words
 		marks = 0
 		strings = Array.new
-		if type == 'c' || type == 'java'
+		if type == 'c' || type == 'java' 
 			marks += get_marks text
 			remove_comments_c text
 			strings = get_strings_c text
 			text = parse_c text
 		elsif type == 'ruby'
+<<<<<<< HEAD
 				marks += get_marks_ruby text
 				text = parse_ruby text
+=======
+			marks += get_marks text
+			strings = get_strings_c text
+			text = parse_c text
+>>>>>>> cd7d5d90f1250cac360d275b1837a2c45adb980e
 		else
 			puts "Error: unsupported type"
 			exit
