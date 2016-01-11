@@ -42,10 +42,10 @@ def svg_gen(filepath)
     type = filename.split('.').first
 
     c = 1
-    width = 70
+    width = 50
     offset = 20
     minWidth = 1.0
-    maxWidth = 300.0
+    maxWidth = 500.0
     maxCount = 0.0
     words2 = words_c(word_counts)
 
