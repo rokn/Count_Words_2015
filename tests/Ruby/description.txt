@@ -1,0 +1,63 @@
+Cases to be tested:
+
+0. Simple Hello World! and comments as well.
+	test: 00.cpp
+	expected result: 00.txt
+
+1. i is a word understood as i
+	test: 01.cpp
+	expected result: 01.txt
+
+2. MyAbstractClass is one word understood as myabstractclass
+	test: 02.cpp
+	expected result: 02.txt
+
+3. method_1 is one word understood as method_1
+	test: 03.cpp
+	expected result: 03.txt
+
+4. public static void getString(int param1, int param2) contains the words public, static, void, getString, int, param1, param2 and two special symbols which are ( )
+	test: 04.cpp
+	expected result: 04.txt
+
+5.for(int i=0;i<10;i++) contains the words for, int, i and the symbols ( = ; < ; + )
+	test: 05.cpp
+	expected result: 05.txt
+
+6. array.each { |var| var.somemethod } contains the words array, each, var, somemethod and the symbols { | . }
+	test: 06.cpp
+	expected result: 06.txt
+
+7. db_name = "test_db" contains the words db_name, test_db and the symbols = "
+	test: 07.cpp
+	expected result: 07.txt
+
+8. simple if statement
+	test: 08.cpp
+	expected result: 08.txt
+
+9. simple loops
+	test: 09.cpp
+	expected result: 09.txt
+
+10. simple case statement
+	test: 10.cpp
+	expected result: 10.txt
+
+11. Test for merging the results from multiple files.
+	test: /small_test
+	expected: small_test.txt
+
+Folder structure:
+
+C++
+|
+--tests
+| |
+| --01.cpp
+|
+--results
+ |
+ --01.txt
+
+For every .cpp or .cc file there is the espected result with the same name, but with .txt extention. 
