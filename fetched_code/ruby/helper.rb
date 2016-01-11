@@ -1,129 +1,126 @@
-def jruby?
-  defined?(RUBY_ENGINE) && RUBY_ENGINE == 'jruby'
-end
-
-unless ENV['TRAVIS']
-  require File.expand_path('../simplecov_custom_profile', __FILE__)
-  SimpleCov.start('gem') do
-    add_filter "/vendor/bundle"
-    add_filter "/vendor/gem"
-    add_filter ".bundle"
-  end
-end
-
-require "nokogiri"
-require 'rubygems'
-require 'ostruct'
+# frozen_string_literal: false
 require 'minitest/autorun'
-require 'minitest/reporters'
-require 'minitest/profile'
-require 'rspec/mocks'
-require 'jekyll'
+require 'fiddle'
 
-Jekyll.logger = Logger.new(StringIO.new)
+# FIXME: this is stolen from DL and needs to be refactored.
 
-unless jruby?
-  require 'rdiscount'
-  require 'redcarpet'
+libc_so = libm_so = nil
+
+case RUBY_PLATFORM
+when /cygwin/
+  libc_so = "cygwin1.dll"
+  libm_so = "cygwin1.dll"
+when /x86_64-linux/
+  libc_so = "/lib64/libc.so.6"
+  libm_so = "/lib64/libm.so.6"
+when /linux/
+  libdir = '/lib'
+  case [0].pack('L!').size
+  when 4
+    # 32-bit ruby
+    libdir = '/lib32' if File.directory? '/lib32'
+  when 8
+    # 64-bit ruby
+    libdir = '/lib64' if File.directory? '/lib64'
+  end
+  libc_so = File.join(libdir, "libc.so.6")
+  libm_so = File.join(libdir, "libm.so.6")
+when /mingw/, /mswin/
+  require "rbconfig"
+  crtname = RbConfig::CONFIG["RUBY_SO_NAME"][/msvc\w+/] || 'ucrtbase'
+  libc_so = libm_so = "#{crtname}.dll"
+when /darwin/
+  libc_so = "/usr/lib/libc.dylib"
+  libm_so = "/usr/lib/libm.dylib"
+when /kfreebsd/
+  libc_so = "/lib/libc.so.0.1"
+  libm_so = "/lib/libm.so.1"
+when /gnu/	#GNU/Hurd
+  libc_so = "/lib/libc.so.0.3"
+  libm_so = "/lib/libm.so.6"
+when /mirbsd/
+  libc_so = "/usr/lib/libc.so.41.10"
+  libm_so = "/usr/lib/libm.so.7.0"
+when /freebsd/
+  libc_so = "/lib/libc.so.7"
+  libm_so = "/lib/libm.so.5"
+when /bsd|dragonfly/
+  libc_so = "/usr/lib/libc.so"
+  libm_so = "/usr/lib/libm.so"
+when /solaris/
+  libdir = '/lib'
+  case [0].pack('L!').size
+  when 4
+    # 32-bit ruby
+    libdir = '/lib' if File.directory? '/lib'
+  when 8
+    # 64-bit ruby
+    libdir = '/lib/64' if File.directory? '/lib/64'
+  end
+  libc_so = File.join(libdir, "libc.so")
+  libm_so = File.join(libdir, "libm.so")
+when /aix/
+  pwd=Dir.pwd
+  libc_so = libm_so = "#{pwd}/libaixdltest.so"
+  unless File.exist? libc_so
+    cobjs=%w!strcpy.o!
+    mobjs=%w!floats.o sin.o!
+    funcs=%w!sin sinf strcpy strncpy!
+    expfile='dltest.exp'
+    require 'tmpdir'
+    Dir.mktmpdir do |dir|
+      begin
+        Dir.chdir dir
+        %x!/usr/bin/ar x /usr/lib/libc.a #{cobjs.join(' ')}!
+        %x!/usr/bin/ar x /usr/lib/libm.a #{mobjs.join(' ')}!
+        %x!echo "#{funcs.join("\n")}\n" > #{expfile}!
+        require 'rbconfig'
+        if RbConfig::CONFIG["GCC"] = 'yes'
+          lflag='-Wl,'
+        else
+          lflag=''
+        end
+        flags="#{lflag}-bE:#{expfile} #{lflag}-bnoentry -lm"
+        %x!#{RbConfig::CONFIG["LDSHARED"]} -o #{libc_so} #{(cobjs+mobjs).join(' ')} #{flags}!
+      ensure
+        Dir.chdir pwd
+      end
+    end
+  end
+else
+  libc_so = ARGV[0] if ARGV[0] && ARGV[0][0] == ?/
+  libm_so = ARGV[1] if ARGV[1] && ARGV[1][0] == ?/
+  if( !(libc_so && libm_so) )
+    $stderr.puts("libc and libm not found: #{$0} <libc> <libm>")
+  end
 end
 
-require 'kramdown'
-require 'shoulda'
+libc_so = nil if !libc_so || (libc_so[0] == ?/ && !File.file?(libc_so))
+libm_so = nil if !libm_so || (libm_so[0] == ?/ && !File.file?(libm_so))
 
-include Jekyll
+if !libc_so || !libm_so
+  ruby = EnvUtil.rubybin
+  ldd = `ldd #{ruby}`
+  #puts ldd
+  libc_so = $& if !libc_so && %r{/\S*/libc\.so\S*} =~ ldd
+  libm_so = $& if !libm_so && %r{/\S*/libm\.so\S*} =~ ldd
+  #p [libc_so, libm_so]
+end
 
-# FIXME: If we really need this we lost the game.
-# STDERR.reopen(test(?e, '/dev/null') ? '/dev/null' : 'NUL:')
+Fiddle::LIBC_SO = libc_so
+Fiddle::LIBM_SO = libm_so
 
-# Report with color.
-Minitest::Reporters.use! [
-  Minitest::Reporters::DefaultReporter.new(
-    :color => true
-  )
-]
+module Fiddle
+  class TestCase < MiniTest::Unit::TestCase
+    def setup
+      @libc = Fiddle.dlopen(LIBC_SO)
+      @libm = Fiddle.dlopen(LIBM_SO)
+    end
 
-class JekyllUnitTest < Minitest::Test
-  include ::RSpec::Mocks::ExampleMethods
-
-  def mocks_expect(*args)
-    RSpec::Mocks::ExampleMethods::ExpectHost.instance_method(:expect).\
-      bind(self).call(*args)
-  end
-
-  def before_setup
-    RSpec::Mocks.setup
-    super
-  end
-
-  def after_teardown
-    super
-    RSpec::Mocks.verify
-  ensure
-    RSpec::Mocks.teardown
-  end
-
-  def fixture_site(overrides = {})
-    Jekyll::Site.new(site_configuration(overrides))
-  end
-
-  def build_configs(overrides, base_hash = Jekyll::Configuration::DEFAULTS)
-    Utils.deep_merge_hashes(base_hash, overrides)
-      .fix_common_issues.backwards_compatibilize.add_default_collections
-  end
-
-  def site_configuration(overrides = {})
-    full_overrides = build_configs(overrides, build_configs({
-      "destination" => dest_dir,
-      "incremental" => false
-    }))
-    build_configs({
-      "source" => source_dir
-    }, full_overrides)
-  end
-
-  def dest_dir(*subdirs)
-    test_dir('dest', *subdirs)
-  end
-
-  def source_dir(*subdirs)
-    test_dir('source', *subdirs)
-  end
-
-  def clear_dest
-    FileUtils.rm_rf(dest_dir)
-    FileUtils.rm_rf(source_dir('.jekyll-metadata'))
-  end
-
-  def test_dir(*subdirs)
-    File.join(File.dirname(__FILE__), *subdirs)
-  end
-
-  def directory_with_contents(path)
-    FileUtils.rm_rf(path)
-    FileUtils.mkdir(path)
-    File.open("#{path}/index.html", "w"){ |f| f.write("I was previously generated.") }
-  end
-
-  def with_env(key, value)
-    old_value = ENV[key]
-    ENV[key] = value
-    yield
-    ENV[key] = old_value
-  end
-
-  def capture_output
-    stderr = StringIO.new
-    Jekyll.logger = Logger.new stderr
-    yield
-    stderr.rewind
-    return stderr.string.to_s
-  end
-  alias_method :capture_stdout, :capture_output
-  alias_method :capture_stderr, :capture_output
-
-  def nokogiri_fragment(str)
-    Nokogiri::HTML.fragment(
-      str
-    )
+    def teardown
+      if /linux/ =~ RUBY_PLATFORM
+        GC.start
+      end
+    end
   end
 end

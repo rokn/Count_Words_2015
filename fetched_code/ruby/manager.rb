@@ -1,299 +1,151 @@
-# Initially we used sidetiq, this was a problem:
+# frozen_string_literal: false
 #
-# 1. No mechnism to add "randomisation" into job execution
-# 2. No stats about previous runs or failures
-# 3. Dependency on ice_cube gem causes runaway CPU
+#  manager demo  ---  called from demo.rb
+#
+unless Object.const_defined?('DemoVar')
+  fail RuntimeError, "This is NOT a stand alone script. This script is called from 'demo.rb'. "
+end
 
-require_dependency 'distributed_mutex'
+module DemoManager
+  @@progress    = TkVariable.new(false)
+  @@status      = TkVariable.new('Compute in progress...')
+  @@homogeneous = TkVariable.new(false)
+  @@constw      = TkVariable.new
+  @@afterobj    = nil
 
-module Scheduler
-  class Manager
-    attr_accessor :random_ratio, :redis
+  def self.create(nb)
+    frame = nb.insert('end', 'demoManager', :text=>'Manager')
 
+    topf = TkFrame.new(frame)
+    titf1 = Tk::BWidget::TitleFrame.new(topf, :text=>"MainFrame")
+    titf2 = Tk::BWidget::TitleFrame.new(topf, :text=>"NoteBook")
+    titf3 = Tk::BWidget::TitleFrame.new(frame, :text=>"Paned & ScrolledWindow")
 
-    class Runner
-      def initialize(manager)
-        @mutex = Mutex.new
-        @queue = Queue.new
-        @manager = manager
-        @reschedule_orphans_thread = Thread.new do
-          while true
-            sleep 1.minute
-            @mutex.synchronize do
-              reschedule_orphans
-            end
-          end
-        end
-        @keep_alive_thread = Thread.new do
-          while true
-            @mutex.synchronize do
-              keep_alive
-            end
-            sleep (@manager.keep_alive_duration / 2)
-          end
-        end
-        @thread = Thread.new do
-          while true
-            process_queue
-          end
-        end
-      end
+    _mainframe(titf1.get_frame)
+    _notebook(titf2.get_frame)
+    _paned(titf3.get_frame)
 
-      def keep_alive
-        @manager.keep_alive
-      rescue => ex
-        Discourse.handle_job_exception(ex, {message: "Scheduling manager keep-alive"})
-      end
+    Tk.pack(titf1, titf2, :padx=>4, :side=>:left, :fill=>:both, :expand=>true)
+    Tk.pack(topf, :fill=>:x, :pady=>2)
+    Tk.pack(titf3, :pady=>2, :padx=>4, :fill=>:both, :expand=>true)
 
-      def reschedule_orphans
-        @manager.reschedule_orphans!
-      rescue => ex
-        Discourse.handle_job_exception(ex, {message: "Scheduling manager orphan rescheduler"})
-      end
+    frame
+  end
 
-      def process_queue
-        klass = @queue.deq
-        # hack alert, I need to both deq and set @running atomically.
-        @running = true
-        failed = false
-        start = Time.now.to_f
-        info = @mutex.synchronize { @manager.schedule_info(klass) }
-        begin
-          info.prev_result = "RUNNING"
-          @mutex.synchronize { info.write! }
-          klass.new.perform
-        rescue Jobs::HandledExceptionWrapper
-          # Discourse.handle_exception was already called, and we don't have any extra info to give
-          failed = true
-        rescue => e
-          Discourse.handle_job_exception(e, {message: "Running a scheduled job", job: klass})
-          failed = true
-        end
-        duration = ((Time.now.to_f - start) * 1000).to_i
-        info.prev_duration = duration
-        info.prev_result = failed ? "FAILED" : "OK"
-        info.current_owner = nil
-        attempts(3) do
-          @mutex.synchronize { info.write! }
-        end
-      rescue => ex
-        Discourse.handle_job_exception(ex, {message: "Processing scheduled job queue"})
-      ensure
-        @running = false
-      end
+  def self._mainframe(parent)
+    labf1 = Tk::BWidget::LabelFrame.new(parent, :text=>'Toolbar',
+                                        :side=>:top, :anchor=>:w,
+                                        :relief=>:sunken, :borderwidth=>2)
+    subf = labf1.get_frame
+    chk1 = TkCheckbutton.new(subf, :text=>'View toolbar 1',
+                             :variable=>DemoVar.toolbar1,
+                             :command=>proc{
+                               DemoVar.mainframe.show_toolbar(
+                                  0, DemoVar.toolbar1.value
+                               )
+                             })
+    chk2 = TkCheckbutton.new(subf, :text=>'View toolbar 2',
+                             :variable=>DemoVar.toolbar2,
+                             :command=>proc{
+                               DemoVar.mainframe.show_toolbar(
+                                  1, DemoVar.toolbar2.value
+                               )
+                             })
 
-      def stop!
-        @mutex.synchronize do
-          @thread.kill
-          @keep_alive_thread.kill
-          @reschedule_orphans_thread.kill
-        end
-      end
+    Tk.pack(chk1, chk2, :anchor=>:w, :fill=>:x)
+    labf1.pack(:fill=>:both)
 
-      def enq(klass)
-        @queue << klass
-      end
+    labf2 = Tk::BWidget::LabelFrame.new(parent, :text=>'Status bar',
+                                        :side=>:top, :anchor=>:w,
+                                        :relief=>:sunken, :borderwidth=>2)
+    subf = labf2.get_frame
+    chk1 = TkCheckbutton.new(subf, :text=>"Show Progress\nindicator",
+                             :justify=>:left, :variable=>@@progress,
+                             :command=>proc{ _show_progress })
+    chk1.pack(:anchor=>:w, :fill=>:x)
 
-      def wait_till_done
-        while !@queue.empty? && !(@queue.num_waiting > 0)
-          sleep 0.001
-        end
-        # this is a hack, but is only used for test anyway
-        sleep 0.001
-        while @running
-          sleep 0.001
-        end
-      end
+    Tk.pack(labf1, labf2, :side=>:left, :padx=>4, :fill=>:both)
+  end
 
-      def attempts(n)
-        n.times {
-          begin
-            yield; break
-          rescue
-            sleep Random.rand
-          end
-        }
-      end
+  def self._notebook(parent)
+    TkCheckbutton.new(parent, :text=>'Homogeneous label',
+                      :variable=>@@homogeneous,
+                      :command=>proc{
+                        DemoVar.notebook[:homogeneous] = @@homogeneous.value
+                      }).pack(:side=>:left, :anchor=>:n, :fill=>:x)
+  end
 
+  def self._paned(parent)
+    pw1   = Tk::BWidget::PanedWindow.new(parent, :side=>:top)
+    pane  = pw1.add(:minsize=>100)
+
+    pw2   = Tk::BWidget::PanedWindow.new(pane, :side=>:left)
+    pane1 = pw2.add(:minsize=>100)
+    pane2 = pw2.add(:minsize=>100)
+
+    pane3 = pw1.add(:minsize=>100)
+
+    [pane1, pane2].each{|pane|
+      sw = Tk::BWidget::ScrolledWindow.new(pane)
+      lb = TkListbox.new(sw, :height=>8, :width=>20, :highlightthickness=>0)
+      (1..8).each{|i| lb.insert('end', "Value #{i}") }
+      sw.set_widget(lb)
+      sw.pack(:fill=>:both, :expand=>true)
+    }
+
+    sw = Tk::BWidget::ScrolledWindow.new(pane3, :relief=>:sunken,
+                                         :borderwidth=>2)
+    sf = Tk::BWidget::ScrollableFrame.new(sw)
+    sw.set_widget(sf)
+    subf = sf.get_frame
+    lab = TkLabel.new(subf, :text=>'This is a ScrollableFrame')
+    chk = TkCheckbutton.new(subf, :text=>'Constrained with',
+                            :variable=>@@constw, :command=>proc{
+                              sf['constrainedwidth'] = @@constw.value
+                            })
+    lab.pack
+    chk.pack(:anchor=>:w)
+    chk.bind('FocusIn', proc{sf.see(chk)})
+    (0..20).each{|i|
+      ent = TkEntry.new(subf, :width=>50).pack(:fill=>:x, :pady=>4)
+      ent.bind('FocusIn', proc{sf.see(ent)})
+      ent.insert('end', "Text field #{i}")
+    }
+
+    Tk.pack(sw, pw2, pw1, :fill=>:both, :expand=>true)
+  end
+
+  def self._show_progress
+    unless @@afterobj
+      @@afterobj = TkTimer.new(30, -1, proc{_update_progress})
     end
-
-    def self.without_runner(redis=nil)
-      self.new(redis, skip_runner: true)
-    end
-
-    def initialize(redis = nil, options=nil)
-      @redis = $redis || redis
-      @random_ratio = 0.1
-      unless options && options[:skip_runner]
-        @runner = Runner.new(self)
-        self.class.current = self
-      end
-
-      @hostname = options && options[:hostname]
-      @manager_id = SecureRandom.hex
-    end
-
-    def self.current
-      @current
-    end
-
-    def self.current=(manager)
-      @current = manager
-    end
-
-    def hostname
-      @hostname ||= `hostname`.strip
-    end
-
-    def schedule_info(klass)
-      ScheduleInfo.new(klass, self)
-    end
-
-    def next_run(klass)
-      schedule_info(klass).next_run
-    end
-
-    def ensure_schedule!(klass)
-      lock do
-        schedule_info(klass).schedule!
-      end
-
-    end
-
-    def remove(klass)
-      lock do
-        schedule_info(klass).del!
-      end
-    end
-
-    def reschedule_orphans!
-      lock do
-        reschedule_orphans_on!
-        reschedule_orphans_on!(hostname)
-      end
-    end
-
-    def reschedule_orphans_on!(hostname=nil)
-      redis.zrange(Manager.queue_key(hostname), 0, -1).each do |key|
-        klass = get_klass(key)
-        next unless klass
-        info = schedule_info(klass)
-
-        if ['QUEUED', 'RUNNING'].include?(info.prev_result) &&
-          (info.current_owner.blank? || !redis.get(info.current_owner))
-          info.prev_result = 'ORPHAN'
-          info.next_run = Time.now.to_i
-          info.write!
-        end
-      end
-    end
-
-    def get_klass(name)
-      name.constantize
-    rescue NameError
-      nil
-    end
-
-    def tick
-      lock do
-        schedule_next_job
-        schedule_next_job(hostname)
-      end
-    end
-
-    def schedule_next_job(hostname=nil)
-      (key, due), _ = redis.zrange Manager.queue_key(hostname), 0, 0, withscores: true
-
-      return unless key
-      if due.to_i <= Time.now.to_i
-        klass = get_klass(key)
-        unless klass
-          # corrupt key, nuke it (renamed job or something)
-          redis.zrem Manager.queue_key(hostname), key
-          return
-        end
-        info = schedule_info(klass)
-        info.prev_run = Time.now.to_i
-        info.prev_result = "QUEUED"
-        info.prev_duration = -1
-        info.next_run = nil
-        info.current_owner = identity_key
-        info.schedule!
-        @runner.enq(klass)
-      end
-    end
-
-    def blocking_tick
-      tick
-      @runner.wait_till_done
-    end
-
-    def stop!
-      @runner.stop!
-      self.class.current = nil
-    end
-
-    def keep_alive_duration
-      60
-    end
-
-    def keep_alive
-      redis.setex identity_key, keep_alive_duration, ""
-    end
-
-    def lock
-      DistributedMutex.new(Manager.lock_key).synchronize do
-        yield
-      end
-    end
-
-
-    def self.discover_schedules
-      # hack for developemnt reloader is crazytown
-      # multiple classes with same name can be in
-      # object space
-      unique = Set.new
-      schedules = []
-      ObjectSpace.each_object(Scheduler::Schedule) do |schedule|
-        if schedule.scheduled?
-          next if unique.include?(schedule.to_s)
-          schedules << schedule
-          unique << schedule.to_s
-        end
-      end
-      schedules
-    end
-
-    @mutex = Mutex.new
-    def self.seq
-      @mutex.synchronize do
-        @i ||= 0
-        @i += 1
-      end
-    end
-
-    def identity_key
-      @identity_key ||= "_scheduler_#{hostname}:#{Process.pid}:#{self.class.seq}:#{SecureRandom.hex}"
-    end
-
-    def self.lock_key
-      "_scheduler_lock_"
-    end
-
-    def self.queue_key(hostname=nil)
-      if hostname
-        "_scheduler_queue_#{hostname}_"
-      else
-        "_scheduler_queue_"
-      end
-    end
-
-    def self.schedule_key(klass,hostname=nil)
-      if hostname
-        "_scheduler_#{klass}_#{hostname}"
-      else
-        "_scheduler_#{klass}"
-      end
+    if @@progress.bool
+      DemoVar.status.value = 'Compute in progress...'
+      DemoVar.prgindic.value = 0
+      DemoVar.mainframe.show_statusbar(:progression)
+      @@afterobj.start unless @@afterobj.running?
+    else
+      DemoVar.status.value = ''
+      DemoVar.mainframe.show_statusbar(:status)
+      @@afterobj.stop
     end
   end
+
+  def self._update_progress
+    if @@progress.bool
+      if DemoVar.prgindic.numeric < 100
+        DemoVar.prgindic.numeric += 5
+      else
+        @@progress.value = false
+        DemoVar.mainframe.show_statusbar(:status)
+        DemoVar.status.value = 'Done'
+        @@afterobj.stop
+        Tk.after(500, proc{ DemoVar.status.value = '' })
+      end
+    else
+      @@afterobj.stop
+    end
+  end
+
 end
+

@@ -1,32 +1,51 @@
-# Redmine - project management software
-# Copyright (C) 2006-2015  Jean-Philippe Lang
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-
-module Redmine
-  module Hook
-    # Base class for hook listeners.
-    class Listener
-      include Singleton
-      include Redmine::I18n
-
-      # Registers the listener
-      def self.inherited(child)
-        Redmine::Hook.add_listener(child)
-        super
-      end
-    end
+# frozen_string_literal: false
+class Listener
+  attr_reader :ts, :te
+  attr_reader :normalize
+  def initialize
+    @ts = false
+    @te = false
+  end
+  def tag_start name, attrs
+    @ts = true if name=="subsection" and attrs["title"]=="Namespaces"
+  end
+  def tag_end name
+    @te = true if name=="documentation"
+  end
+  def text text
+    @normalize = text
+    #text.tr! "\n", ' '
+    #puts "text #{text[0..10]}..."
+  end
+  def instruction name, instruction
+    #puts "instruction"
+  end
+  def comment comment
+    #puts "comment #{comment[0..10]}..."
+  end
+  def doctype name, pub_sys, long_name, uri
+    #puts "doctype #{name}"
+  end
+  def attlistdecl content
+    #puts "attlistdecl"
+  end
+  def elementdecl content
+    #puts "elementdecl"
+  end
+  def entitydecl content
+    #puts "entitydecl"
+  end
+  def notationdecl content
+    #puts "notationdecl"
+  end
+  def entity content
+    #puts "entity"
+  end
+  def cdata content
+    #puts "cdata"
+  end
+  def xmldecl version, encoding, standalone
+    #puts "xmldecl #{version}"
   end
 end
+

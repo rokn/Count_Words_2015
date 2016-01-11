@@ -1,10 +1,20 @@
-class Visitor
-  extend ActiveModel::Callbacks
-  include ActiveModel::SecurePassword
+# frozen_string_literal: false
+module Psych
+  module Visitors
+    class Visitor
+      def accept target
+        visit target
+      end
 
-  define_model_callbacks :create
+      private
 
-  has_secure_password(validations: false)
+      DISPATCH = Hash.new do |hash, klass|
+        hash[klass] = "visit_#{klass.name.gsub('::', '_')}"
+      end
 
-  attr_accessor :password_digest, :password_confirmation
+      def visit target
+        send DISPATCH[target.class], target
+      end
+    end
+  end
 end

@@ -1,98 +1,82 @@
-# Use singleton class Spree::Preferences::Store.instance to access
+# frozen_string_literal: false
 #
-# StoreInstance has a persistence flag that is on by default,
-# but we disable database persistence in testing to speed up tests
+# YAML::Store
 #
+require 'yaml'
+require 'pstore'
 
-require 'singleton'
+# YAML::Store provides the same functionality as PStore, except it uses YAML
+# to dump objects instead of Marshal.
+#
+# == Example
+#
+#   require 'yaml/store'
+#
+#   Person = Struct.new :first_name, :last_name
+#
+#   people = [Person.new("Bob", "Smith"), Person.new("Mary", "Johnson")]
+#
+#   store = YAML::Store.new "test.store"
+#
+#   store.transaction do
+#     store["people"] = people
+#     store["greeting"] = { "hello" => "world" }
+#   end
+#
+# After running the above code, the contents of "test.store" will be:
+#
+#   ---
+#   people:
+#   - !ruby/struct:Person
+#     first_name: Bob
+#     last_name: Smith
+#   - !ruby/struct:Person
+#     first_name: Mary
+#     last_name: Johnson
+#   greeting:
+#     hello: world
 
-module Spree::Preferences
+class YAML::Store < PStore
 
-  class StoreInstance
-    attr_accessor :persistence
-
-    def initialize
-      @cache = Rails.cache
-      @persistence = true
-    end
-
-    def set(key, value)
-      @cache.write(key, value)
-      persist(key, value)
-    end
-    alias_method :[]=, :set
-
-    def exist?(key)
-      @cache.exist?(key) ||
-      should_persist? && Spree::Preference.where(:key => key).exists?
-    end
-
-    def get(key)
-      # return the retrieved value, if it's in the cache
-      # use unless nil? incase the value is actually boolean false
-      #
-      unless (val = @cache.read(key)).nil?
-        return val
-      end
-
-      if should_persist?
-        # If it's not in the cache, maybe it's in the database, but
-        # has been cleared from the cache
-
-        # does it exist in the database?
-        if preference = Spree::Preference.find_by_key(key)
-          # it does exist
-          val = preference.value
-        else
-          # use the fallback value
-          val = yield
-        end
-
-        # Cache either the value from the db or the fallback value.
-        # This avoids hitting the db with subsequent queries.
-        @cache.write(key, val)
-
-        return val
-      else
-        yield
-      end
-    end
-    alias_method :fetch, :get
-
-    def delete(key)
-      @cache.delete(key)
-      destroy(key)
-    end
-
-    def clear_cache
-      @cache.clear
-    end
-
-    private
-
-    def persist(cache_key, value)
-      return unless should_persist?
-
-      preference = Spree::Preference.where(:key => cache_key).first_or_initialize
-      preference.value = value
-      preference.save
-    end
-
-    def destroy(cache_key)
-      return unless should_persist?
-
-      preference = Spree::Preference.find_by_key(cache_key)
-      preference.destroy if preference
-    end
-
-    def should_persist?
-      @persistence and Spree::Preference.table_exists?
-    end
-
+  # :call-seq:
+  #   initialize( file_name, yaml_opts = {} )
+  #
+  # Creates a new YAML::Store object, which will store data in +file_name+.
+  # If the file does not already exist, it will be created.
+  #
+  #
+  # Options passed in through +yaml_opts+ will be used when converting the
+  # store to YAML via Hash#to_yaml().
+  def initialize file_name, yaml_opts = {}
+    @opt = yaml_opts
+    super
   end
 
-  class Store < StoreInstance
-    include Singleton
+  # :stopdoc:
+
+  def dump(table)
+    YAML.dump @table
   end
 
+  def load(content)
+    table = YAML.load(content)
+    if table == false
+      {}
+    else
+      table
+    end
+  end
+
+  def marshal_dump_supports_canonical_option?
+    false
+  end
+
+  EMPTY_MARSHAL_DATA = YAML.dump({})
+  EMPTY_MARSHAL_CHECKSUM = Digest::MD5.digest(EMPTY_MARSHAL_DATA)
+  def empty_marshal_data
+    EMPTY_MARSHAL_DATA
+  end
+  def empty_marshal_checksum
+    EMPTY_MARSHAL_CHECKSUM
+  end
 end

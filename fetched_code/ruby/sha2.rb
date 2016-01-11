@@ -1,30 +1,108 @@
-class Sha2 < Formula
-  desc "Implementation of SHA-256, SHA-384, and SHA-512 hash algorithms"
-  homepage "https://www.aarongifford.com/computers/sha.html"
-  url "https://www.aarongifford.com/computers/sha2-1.0.1.tgz"
-  sha256 "67bc662955c6ca2fa6a0ce372c4794ec3d0cd2c1e50b124e7a75af7e23dd1d0c"
+# frozen_string_literal: false
+#--
+# sha2.rb - defines Digest::SHA2 class which wraps up the SHA256,
+#           SHA384, and SHA512 classes.
+#++
+# Copyright (c) 2006 Akinori MUSHA <knu@iDaemons.org>
+#
+# All rights reserved.  You can redistribute and/or modify it under the same
+# terms as Ruby.
+#
+#   $Id$
 
-  bottle do
-    cellar :any
-    revision 1
-    sha256 "e087ba4357e2ed9d75bd2d25253c0982ac742db854d1c7c6792671d58e05bdc8" => :yosemite
-    sha256 "7bb393c6de372210c1343a76094063a344f59f7bfeed67210abc749e9dfb93aa" => :mavericks
-    sha256 "dc28fabf8cd4680b5ff534de7ef19ad95c4b839f6b891f80292e6ac9bd0952ad" => :mountain_lion
-  end
+require 'digest'
+require 'digest/sha2.so'
 
-  option "without-test", "Skip compile-time tests"
+module Digest
+  #
+  # A meta digest provider class for SHA256, SHA384 and SHA512.
+  #
+  class SHA2 < Digest::Class
+    # call-seq:
+    #   Digest::SHA2.new(bitlen = 256) -> digest_obj
+    #
+    # Creates a new SHA2 hash object with a given bit length.
+    #
+    # Valid bit lengths are 256, 384 and 512.
+    def initialize(bitlen = 256)
+      case bitlen
+      when 256
+        @sha2 = Digest::SHA256.new
+      when 384
+        @sha2 = Digest::SHA384.new
+      when 512
+        @sha2 = Digest::SHA512.new
+      else
+        raise ArgumentError, "unsupported bit length: %s" % bitlen.inspect
+      end
+      @bitlen = bitlen
+    end
 
-  deprecated_option "without-check" => "without-test"
+    # call-seq:
+    #   digest_obj.reset -> digest_obj
+    #
+    # Resets the digest to the initial state and returns self.
+    def reset
+      @sha2.reset
+      self
+    end
 
-  def install
-    system ENV.cc, "-o", "sha2", "sha2prog.c", "sha2.c"
-    system "perl", "sha2test.pl" if build.with? "test"
-    bin.install "sha2"
-  end
+    # call-seq:
+    #   digest_obj.update(string) -> digest_obj
+    #   digest_obj << string -> digest_obj
+    #
+    # Updates the digest using a given _string_ and returns self.
+    def update(str)
+      @sha2.update(str)
+      self
+    end
+    alias << update
 
-  test do
-    (testpath/"checkme.txt").write "homebrew"
-    assert_match "12c87370d1b5472793e67682596b60efe2c6038d63d04134a1a88544509737b4",
-      pipe_output("#{bin}/sha2 -q -256 #{testpath}/checkme.txt")
+    def finish # :nodoc:
+      @sha2.digest!
+    end
+    private :finish
+
+
+    # call-seq:
+    #   digest_obj.block_length -> Integer
+    #
+    # Returns the block length of the digest in bytes.
+    #
+    #   Digest::SHA256.new.block_length * 8
+    #   # => 512
+    #   Digest::SHA384.new.block_length * 8
+    #   # => 1024
+    #   Digest::SHA512.new.block_length * 8
+    #   # => 1024
+    def block_length
+      @sha2.block_length
+    end
+
+    # call-seq:
+    #   digest_obj.digest_length -> Integer
+    #
+    # Returns the length of the hash value of the digest in bytes.
+    #
+    #   Digest::SHA256.new.digest_length * 8
+    #   # => 256
+    #   Digest::SHA384.new.digest_length * 8
+    #   # => 384
+    #   Digest::SHA512.new.digest_length * 8
+    #   # => 512
+    #
+    # For example, digests produced by Digest::SHA256 will always be 32 bytes
+    # (256 bits) in size.
+    def digest_length
+      @sha2.digest_length
+    end
+
+    def initialize_copy(other) # :nodoc:
+      @sha2 = other.instance_eval { @sha2.clone }
+    end
+
+    def inspect # :nodoc:
+      "#<%s:%d %s>" % [self.class.name, @bitlen, hexdigest]
+    end
   end
 end

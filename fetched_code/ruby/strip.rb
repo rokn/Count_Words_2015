@@ -1,23 +1,13 @@
-class String
-  # Strips indentation in heredocs.
-  #
-  # For example in
-  #
-  #   if options[:usage]
-  #     puts <<-USAGE.strip_heredoc
-  #       This command does such and such.
-  #
-  #       Supported options are:
-  #         -h         This message
-  #         ...
-  #     USAGE
-  #   end
-  #
-  # the user would see the usage message aligned against the left margin.
-  #
-  # Technically, it looks for the least indented non-empty line
-  # in the whole string, and removes that amount of leading whitespace.
-  def strip_heredoc
-    gsub(/^#{scan(/^[ \t]*(?=\S)/).min}/, ''.freeze)
+# frozen_string_literal: false
+last_is_void = false
+ARGF.each do |line|
+  if line.strip.empty?
+    #puts() unless last_is_void
+    last_is_void = true
+  elsif /\A\#/ === line
+    ;
+  else
+    print line
+    last_is_void = false
   end
 end

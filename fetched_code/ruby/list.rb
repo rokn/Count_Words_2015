@@ -1,17 +1,37 @@
-# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
-#
-# Fat Free CRM is freely distributable under the terms of MIT license.
-# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
-#------------------------------------------------------------------------------
-class List < ActiveRecord::Base
-  validates_presence_of :name
-  validates_presence_of :url
-  belongs_to :user
+# frozen_string_literal: false
+module Gem
+  class List
+    include Enumerable
+    attr_accessor :value, :tail
 
-  # Parses the controller from the url
-  def controller
-    (url || "").sub(/\A\//, '').split(/\/|\?/).first
+    def initialize(value = nil, tail = nil)
+      @value = value
+      @tail = tail
+    end
+
+    def each
+      n = self
+      while n
+        yield n.value
+        n = n.tail
+      end
+    end
+
+    def to_a
+      super.reverse
+    end
+
+    def prepend(value)
+      List.new value, self
+    end
+
+    def pretty_print q # :nodoc:
+      q.pp to_a
+    end
+
+    def self.prepend(list, value)
+      return List.new(value) unless list
+      List.new value, list
+    end
   end
-
-  ActiveSupport.run_load_hooks(:fat_free_crm_list, self)
 end

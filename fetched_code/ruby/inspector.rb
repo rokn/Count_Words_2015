@@ -1,210 +1,132 @@
-require 'delegate'
-require 'active_support/core_ext/string/strip'
+# frozen_string_literal: false
+#
+#   irb/inspector.rb - inspect methods
+#   	$Release Version: 0.9.6$
+#   	$Revision: 1.19 $
+#   	$Date: 2002/06/11 07:51:31 $
+#   	by Keiju ISHITSUKA(keiju@ruby-lang.org)
+#
+# --
+#
+#
+#
 
-module ActionDispatch
-  module Routing
-    class RouteWrapper < SimpleDelegator
-      def endpoint
-        app.dispatcher? ? "#{controller}##{action}" : rack_app.inspect
+module IRB # :nodoc:
+
+
+  # Convenience method to create a new Inspector, using the given +inspect+
+  # proc, and optional +init+ proc and passes them to Inspector.new
+  #
+  #     irb(main):001:0> ins = IRB::Inspector(proc{ |v| "omg! #{v}" })
+  #     irb(main):001:0> IRB.CurrentContext.inspect_mode = ins # => omg! #<IRB::Inspector:0x007f46f7ba7d28>
+  #     irb(main):001:0> "what?" #=> omg! what?
+  #
+  def IRB::Inspector(inspect, init = nil)
+    Inspector.new(inspect, init)
+  end
+
+  # An irb inspector
+  #
+  # In order to create your own custom inspector there are two things you
+  # should be aware of:
+  #
+  # Inspector uses #inspect_value, or +inspect_proc+, for output of return values.
+  #
+  # This also allows for an optional #init+, or +init_proc+, which is called
+  # when the inspector is activated.
+  #
+  # Knowing this, you can create a rudimentary inspector as follows:
+  #
+  #     irb(main):001:0> ins = IRB::Inspector.new(proc{ |v| "omg! #{v}" })
+  #     irb(main):001:0> IRB.CurrentContext.inspect_mode = ins # => omg! #<IRB::Inspector:0x007f46f7ba7d28>
+  #     irb(main):001:0> "what?" #=> omg! what?
+  #
+  class Inspector
+    # Default inspectors available to irb, this includes:
+    #
+    # +:pp+::       Using Kernel#pretty_inspect
+    # +:yaml+::     Using YAML.dump
+    # +:marshal+::  Using Marshal.dump
+    INSPECTORS = {}
+
+    # Determines the inspector to use where +inspector+ is one of the keys passed
+    # during inspector definition.
+    def self.keys_with_inspector(inspector)
+      INSPECTORS.select{|k,v| v == inspector}.collect{|k, v| k}
+    end
+
+    # Example
+    #
+    #     Inspector.def_inspector(key, init_p=nil){|v| v.inspect}
+    #     Inspector.def_inspector([key1,..], init_p=nil){|v| v.inspect}
+    #     Inspector.def_inspector(key, inspector)
+    #     Inspector.def_inspector([key1,...], inspector)
+    def self.def_inspector(key, arg=nil, &block)
+      if block_given?
+        inspector = IRB::Inspector(block, arg)
+      else
+        inspector = arg
       end
 
-      def constraints
-        requirements.except(:controller, :action)
-      end
-
-      def rack_app
-        app.app
-      end
-
-      def path
-        super.spec.to_s
-      end
-
-      def name
-        super.to_s
-      end
-
-      def reqs
-        @reqs ||= begin
-          reqs = endpoint
-          reqs += " #{constraints}" unless constraints.empty?
-          reqs
+      case key
+      when Array
+        for k in key
+          def_inspector(k, inspector)
         end
-      end
-
-      def controller
-        requirements[:controller] || ':controller'
-      end
-
-      def action
-        requirements[:action] || ':action'
-      end
-
-      def internal?
-        controller.to_s =~ %r{\Arails/(info|mailers|welcome)}
-      end
-
-      def engine?
-        rack_app.respond_to?(:routes)
+      when Symbol
+        INSPECTORS[key] = inspector
+        INSPECTORS[key.to_s] = inspector
+      when String
+        INSPECTORS[key] = inspector
+        INSPECTORS[key.intern] = inspector
+      else
+        INSPECTORS[key] = inspector
       end
     end
 
-    ##
-    # This class is just used for displaying route information when someone
-    # executes `rake routes` or looks at the RoutingError page.
-    # People should not use this class.
-    class RoutesInspector # :nodoc:
-      def initialize(routes)
-        @engines = {}
-        @routes = routes
-      end
-
-      def format(formatter, filter = nil)
-        routes_to_display = filter_routes(filter)
-
-        routes = collect_routes(routes_to_display)
-
-        if routes.none?
-          formatter.no_routes
-          return formatter.result
-        end
-
-        formatter.header routes
-        formatter.section routes
-
-        @engines.each do |name, engine_routes|
-          formatter.section_title "Routes for #{name}"
-          formatter.section engine_routes
-        end
-
-        formatter.result
-      end
-
-      private
-
-      def filter_routes(filter)
-        if filter
-          @routes.select { |route| route.defaults[:controller] == filter }
-        else
-          @routes
-        end
-      end
-
-      def collect_routes(routes)
-        routes.collect do |route|
-          RouteWrapper.new(route)
-        end.reject(&:internal?).collect do |route|
-          collect_engine_routes(route)
-
-          { name: route.name,
-            verb: route.verb,
-            path: route.path,
-            reqs: route.reqs }
-        end
-      end
-
-      def collect_engine_routes(route)
-        name = route.endpoint
-        return unless route.engine?
-        return if @engines[name]
-
-        routes = route.rack_app.routes
-        if routes.is_a?(ActionDispatch::Routing::RouteSet)
-          @engines[name] = collect_routes(routes.routes)
-        end
-      end
+    # Creates a new inspector object, using the given +inspect_proc+ when
+    # output return values in irb.
+    def initialize(inspect_proc, init_proc = nil)
+      @init = init_proc
+      @inspect = inspect_proc
     end
 
-    class ConsoleFormatter
-      def initialize
-        @buffer = []
-      end
-
-      def result
-        @buffer.join("\n")
-      end
-
-      def section_title(title)
-        @buffer << "\n#{title}:"
-      end
-
-      def section(routes)
-        @buffer << draw_section(routes)
-      end
-
-      def header(routes)
-        @buffer << draw_header(routes)
-      end
-
-      def no_routes
-        @buffer << <<-MESSAGE.strip_heredoc
-          You don't have any routes defined!
-
-          Please add some routes in config/routes.rb.
-
-          For more information about routes, see the Rails guide: http://guides.rubyonrails.org/routing.html.
-          MESSAGE
-      end
-
-      private
-        def draw_section(routes)
-          header_lengths = ['Prefix', 'Verb', 'URI Pattern'].map(&:length)
-          name_width, verb_width, path_width = widths(routes).zip(header_lengths).map(&:max)
-
-          routes.map do |r|
-            "#{r[:name].rjust(name_width)} #{r[:verb].ljust(verb_width)} #{r[:path].ljust(path_width)} #{r[:reqs]}"
-          end
-        end
-
-        def draw_header(routes)
-          name_width, verb_width, path_width = widths(routes)
-
-          "#{"Prefix".rjust(name_width)} #{"Verb".ljust(verb_width)} #{"URI Pattern".ljust(path_width)} Controller#Action"
-        end
-
-        def widths(routes)
-          [routes.map { |r| r[:name].length }.max || 0,
-           routes.map { |r| r[:verb].length }.max || 0,
-           routes.map { |r| r[:path].length }.max || 0]
-        end
+    # Proc to call when the inspector is activated, good for requiring
+    # dependent libraries.
+    def init
+      @init.call if @init
     end
 
-    class HtmlTableFormatter
-      def initialize(view)
-        @view = view
-        @buffer = []
-      end
-
-      def section_title(title)
-        @buffer << %(<tr><th colspan="4">#{title}</th></tr>)
-      end
-
-      def section(routes)
-        @buffer << @view.render(partial: "routes/route", collection: routes)
-      end
-
-      # the header is part of the HTML page, so we don't construct it here.
-      def header(routes)
-      end
-
-      def no_routes
-        @buffer << <<-MESSAGE.strip_heredoc
-          <p>You don't have any routes defined!</p>
-          <ul>
-            <li>Please add some routes in <tt>config/routes.rb</tt>.</li>
-            <li>
-              For more information about routes, please see the Rails guide
-              <a href="http://guides.rubyonrails.org/routing.html">Rails Routing from the Outside In</a>.
-            </li>
-          </ul>
-          MESSAGE
-      end
-
-      def result
-        @view.raw @view.render(layout: "routes/table") {
-          @view.raw @buffer.join("\n")
-        }
-      end
+    # Proc to call when the input is evaluated and output in irb.
+    def inspect_value(v)
+      @inspect.call(v)
     end
   end
+
+  Inspector.def_inspector([false, :to_s, :raw]){|v| v.to_s}
+  Inspector.def_inspector([true, :p, :inspect]){|v|
+    begin
+      v.inspect
+    rescue NoMethodError
+      puts "(Object doesn't support #inspect)"
+    end
+  }
+  Inspector.def_inspector([:pp, :pretty_inspect], proc{require "pp"}){|v| v.pretty_inspect.chomp}
+  Inspector.def_inspector([:yaml, :YAML], proc{require "yaml"}){|v|
+    begin
+      YAML.dump(v)
+    rescue
+      puts "(can't dump yaml. use inspect)"
+      v.inspect
+    end
+  }
+
+  Inspector.def_inspector([:marshal, :Marshal, :MARSHAL, Marshal]){|v|
+    Marshal.dump(v)
+  }
 end
+
+
+
+
+
