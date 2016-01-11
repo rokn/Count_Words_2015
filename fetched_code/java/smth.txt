@@ -1,0 +1,32 @@
+drools -http://www.drools.org/code/sourceCode.html
+-141k
+drools-master -http://www.drools.org/code/sourceCode.html
+-227k
+openjdk -http://download.java.net/openjdk/jdk7/
+/corba(folder)
+-205k
+/hotspots(folder)
+-268k 
+/jdk(folder)
+-27k+347k+52k
+/langtools(folder)
+-172k+14k
+spring-boot - https://github.com/spring-projects
+/spring-boot(folder)
+-52k
+/spring-boot-actuator
+-37k
+/spring-boot-actuconfigure
+-64k
+/spring-boot-cli
+-19k
+/spring-boot-deployment-tests
+-0.4k
+/spring-boot-devtools
+-17k
+/spring-boot-tools
+-26k
+/spring-boot-samples
+-25k
+Total:
+1.7m

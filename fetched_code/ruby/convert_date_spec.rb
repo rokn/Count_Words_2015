@@ -1,0 +1,25 @@
+# encoding: utf-8
+
+RSpec.describe TTY::Prompt::Question, 'convert date' do
+  it 'converts date' do
+    prompt = TTY::TestPrompt.new
+    prompt.input << "20th April 1887"
+    prompt.input.rewind
+    response = prompt.ask("When were your born?", convert: :date)
+    expect(response).to be_kind_of(Date)
+    expect(response.day).to eq(20)
+    expect(response.month).to eq(4)
+    expect(response.year).to eq(1887)
+  end
+
+  it "converts datetime" do
+    prompt = TTY::TestPrompt.new
+    prompt.input << "20th April 1887"
+    prompt.input.rewind
+    response = prompt.ask("When were your born?", convert: :datetime)
+    expect(response).to be_kind_of(DateTime)
+    expect(response.day).to eq(20)
+    expect(response.month).to eq(4)
+    expect(response.year).to eq(1887)
+  end
+end
