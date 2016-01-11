@@ -2,7 +2,7 @@ class WordCounter
 	private
 	def self.remove_comments_c text
 		text.gsub!(/(\/\/.*\n)|(\/\*([\s\S]*?)\*\/)/, ' ')
-		end
+	end
 	def self.get_strings_c text
 		strings = text.scan(/("")|(\'\')/)
 		i=0
@@ -42,6 +42,14 @@ class WordCounter
 		text.scan(/[\`\~\!\@\#\$\%\^\&\*\(\)\-\/\*\-\+\=\[\]\;\:\|\?\<\>\,\'\{\}\\\.]/).size
 	end
 
+	def self.parse_ruby text
+		text = text.gsub(/[^a-zA-Z,_\s]/, '').gsub(/\./, ' ')
+	end
+
+	def self.get_marks_ruby text
+		text.scan(/([A-z])+\w?/).size
+	end
+
 	public
 
 	def self.sort_words words
@@ -56,6 +64,9 @@ class WordCounter
 			remove_comments_c text
 			strings = get_strings_c text
 			text = parse_c text
+		elsif type == 'ruby'
+				marks += get_marks_ruby text
+				text = parse_ruby text
 		else
 			puts "Error: unsupported type"
 			exit
