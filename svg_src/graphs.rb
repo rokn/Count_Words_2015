@@ -53,7 +53,7 @@ def svg_gen(filepath)
     max = maxWidth.to_f
                
     File.open('' + type.to_s + '.svg', "w") do |f|
-        f.write('<svg width = "' + (words2 * 100).to_s + '" height = "500" xmlns="http://www.w3.org/2000/svg">')
+        f.write('<svg width = "' + (words2 * 100).to_s + '" height = "1500" xmlns="http://www.w3.org/2000/svg">')
 
         maxCount = largest_value(word_counts)
             
