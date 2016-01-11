@@ -78,5 +78,11 @@ def svg_gen(filepath)
 end
 
 svg_gen(ARGV[0])
-svg_gen(ARGV[1])
-svg_gen(ARGV[2])
+
+if ARGV[1] != nil
+    svg_gen(ARGV[1])
+end
+
+if ARGV[2] != nil
+    svg_gen(ARGV[2])
+end
