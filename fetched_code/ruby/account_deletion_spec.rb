@@ -1,77 +1,134 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+require 'spec_helper'
 
-require "spec_helper"
+describe 'deleteing your account', :type => :request do
+  context "user" do
+    before do
+      @bob2 = bob
+      @person = @bob2.person
+      @alices_post = alice.post(:status_message, :text => "@{@bob2 Grimn; #{@bob2.person.diaspora_handle}} you are silly", :to => alice.aspects.find_by_name('generic'))
 
-describe AccountDeletion, :type => :model do
-  let(:account_deletion_new) { AccountDeletion.new(person: alice.person) }
-  let(:account_deletion_create) { AccountDeletion.create(person: alice.person) }
+      @bobs_contact_ids = @bob2.contacts.map {|c| c.id}
 
-  it "assigns the diaspora_handle from the person object" do
-    expect(account_deletion_new.diaspora_handle).to eq(alice.person.diaspora_handle)
+      #@bob2's own content
+      @bob2.post(:status_message, :text => 'asldkfjs', :to => @bob2.aspects.first)
+      f = FactoryGirl.create(:photo, :author => @bob2.person)
+
+      @aspect_vis = AspectVisibility.where(:aspect_id => @bob2.aspects.map(&:id))
+
+      #objects on post
+      @bob2.like!(@alices_post)
+      @bob2.comment!(@alices_post, "here are some thoughts on your post")
+
+      #conversations
+      create_conversation_with_message(alice, @bob2.person, "Subject", "Hey @bob2")
+
+      #join tables
+      @users_sv = ShareVisibility.where(:contact_id => @bobs_contact_ids).load
+      @persons_sv = ShareVisibility.where(:contact_id => bob.person.contacts.map(&:id)).load
+
+      #user associated objects
+      @prefs = []
+      %w{mentioned liked reshared}.each do |pref|
+        @prefs << @bob2.user_preferences.create!(:email_type => pref)
+      end
+
+      # notifications
+      @notifications = []
+      3.times do |n|
+        @notifications << FactoryGirl.create(:notification, :recipient => @bob2)
+      end
+
+      # services
+      @services = []
+      3.times do |n|
+        @services << FactoryGirl.create(:service, :user => @bob2)
+      end
+
+      # block
+      @block = @bob2.blocks.create!(:person => eve.person)
+
+      #authorization
+
+      AccountDeleter.new(@bob2.person.diaspora_handle).perform!
+      @bob2.reload
+    end
+
+    it "deletes all of the user's preferences" do
+      expect(UserPreference.where(:id => @prefs.map{|pref| pref.id})).to be_empty
+    end
+
+    it "deletes all of the user's notifications" do
+      expect(Notification.where(:id => @notifications.map{|n| n.id})).to be_empty
+    end
+
+    it "deletes all of the users's blocked users" do
+      expect(Block.where(:id => @block.id)).to be_empty
+    end
+
+    it "deletes all of the user's services" do
+      expect(Service.where(:id => @services.map{|s| s.id})).to be_empty
+    end
+
+    it 'deletes all of @bob2s share visiblites' do
+      expect(ShareVisibility.where(:id => @users_sv.map{|sv| sv.id})).to be_empty
+      expect(ShareVisibility.where(:id => @persons_sv.map{|sv| sv.id})).to be_empty
+    end
+
+    it 'deletes all of @bob2s aspect visiblites' do
+      expect(AspectVisibility.where(:id => @aspect_vis.map(&:id))).to be_empty
+    end
+
+    it 'deletes all aspects' do
+      expect(@bob2.aspects).to be_empty
+    end
+
+    it 'deletes all user contacts' do
+      expect(@bob2.contacts).to be_empty
+    end
+
+
+    it "clears the account fields" do
+      @bob2.send(:clearable_fields).each do |field|
+        expect(@bob2.reload[field]).to be_blank
+      end
+    end
+
+    it_should_behave_like 'it removes the person associations'
   end
 
-  it "fires a job after creation"do
-    expect(Workers::DeleteAccount).to receive(:perform_async).with(anything)
-    account_deletion_create
-  end
+  context 'remote person' do
+    before do
+      @person = remote_raphael
 
-  describe "#perform!" do
-    it "creates a deleter" do
-      expect(AccountDeleter).to receive(:new).with(alice.person.diaspora_handle).and_return(double(perform!: true))
-      account_deletion_new.perform!
+      #contacts
+      @contacts = @person.contacts
+
+      #posts
+      @posts = (1..3).map do
+        FactoryGirl.create(:status_message, :author => @person)
+      end
+
+      @persons_sv = @posts.each do |post|
+        @contacts.each do |contact|
+          ShareVisibility.create!(:contact_id => contact.id, :shareable => post)
+        end
+      end
+
+      #photos
+      @photo = FactoryGirl.create(:photo, :author => @person)
+
+      #mentions
+      @mentions = 3.times do
+        FactoryGirl.create(:mention, :person => @person)
+      end
+
+      #conversations
+      create_conversation_with_message(alice, @person, "Subject", "Hey @bob2")
+
+      AccountDeleter.new(@person.diaspora_handle).perform!
+      @person.reload
     end
 
-    it "dispatches the account deletion if the user exists" do
-      expect(account_deletion_new).to receive(:dispatch)
-      account_deletion_new.perform!
-    end
-
-    it "does not dispatch an account deletion for non-local people" do
-      deletion = AccountDeletion.new(person: remote_raphael)
-      expect(deletion).not_to receive(:dispatch)
-      deletion.perform!
-    end
-
-    it "marks an AccountDeletion as completed when successful" do
-      account_deletion_create.perform!
-      expect(account_deletion_create.reload.completed_at).not_to be_nil
-    end
-  end
-
-  describe "#dispatch" do
-    it "creates a public postzord" do
-      expect(Postzord::Dispatcher::Public).to receive(:new).and_return(double.as_null_object)
-      account_deletion_new.dispatch
-    end
-  end
-
-  describe "#subscribers" do
-    it "includes all remote contacts" do
-      alice.share_with(remote_raphael, alice.aspects.first)
-
-      expect(account_deletion_new.subscribers(alice)).to eq([remote_raphael])
-    end
-
-    it "includes remote resharers" do
-      status_message = FactoryGirl.create(:status_message, public: true, author: alice.person)
-      FactoryGirl.create(:reshare, author: remote_raphael, root: status_message)
-      FactoryGirl.create(:reshare, author: local_luke.person, root: status_message)
-
-      expect(account_deletion_new.subscribers(alice)).to eq([remote_raphael])
-    end
-  end
-
-  describe "serialization" do
-    let(:xml) { account_deletion_new.to_xml.to_s }
-
-    it "should have a diaspora_handle" do
-      expect(xml.include?(alice.person.diaspora_handle)).to eq(true)
-    end
-
-    it "marshals the xml" do
-      expect(AccountDeletion.from_xml(xml)).to be_valid
-    end
+      it_should_behave_like 'it removes the person associations'
   end
 end

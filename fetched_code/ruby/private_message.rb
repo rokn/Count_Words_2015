@@ -1,15 +1,15 @@
-class Notifications::PrivateMessage < Notification
-  def mail_job
-    Workers::Mail::PrivateMessage
-  end
-  def popup_translation_key
-    'notifications.private_message'
-  end
-  def self.make_notification(recipient, target, actor, notification_type)
-    n = notification_type.new(:target => target,
-                               :recipient_id => recipient.id)
-    target.increase_unread(recipient)
-    n.actors << actor
-    n
+module NotificationMailers
+  class PrivateMessage < NotificationMailers::Base
+    attr_accessor :message, :conversation, :participants
+
+    def set_headers(message_id)
+      @message  = Message.find_by_id(message_id)
+      @conversation = @message.conversation
+      @participants = @conversation.participants
+
+      @headers[:from] = "\"#{@message.author_name} (diaspora*)\" <#{AppConfig.mail.sender_address}>"
+      @headers[:subject] = @conversation.subject.strip
+      @headers[:subject] = "Re: #{@headers[:subject]}" if @conversation.messages.size > 1
+    end
   end
 end

@@ -1,123 +1,149 @@
 module Spree
-  module BaseHelper
-
-    def available_countries
-      checkout_zone = Zone.find_by(name: Spree::Config[:checkout_zone])
-
-      if checkout_zone && checkout_zone.kind == 'country'
-        countries = checkout_zone.country_list
-      else
-        countries = Country.all
-      end
-
-      countries.collect do |country|
-        country.name = Spree.t(country.iso, scope: 'country_names', default: country.name)
-        country
-      end.sort_by { |c| c.name.parameterize }
-    end
-
-    def display_price(product_or_variant)
-      product_or_variant.
-        price_in(current_currency).
-        display_price_including_vat_for(current_price_options).
-        to_html
-    end
-
-    def link_to_tracking(shipment, options = {})
-      return unless shipment.tracking && shipment.shipping_method
-
-      if shipment.tracking_url
-        link_to(shipment.tracking, shipment.tracking_url, options)
-      else
-        content_tag(:span, shipment.tracking)
-      end
-    end
-
-    def logo(image_path=Spree::Config[:logo])
-      link_to image_tag(image_path), spree.root_path
-    end
-
-    def meta_data
-      object = instance_variable_get('@'+controller_name.singularize)
-      meta = {}
-
-      if object.kind_of? ActiveRecord::Base
-        meta[:keywords] = object.meta_keywords if object[:meta_keywords].present?
-        meta[:description] = object.meta_description if object[:meta_description].present?
-      end
-
-      if meta[:description].blank? && object.kind_of?(Spree::Product)
-        meta[:description] = truncate(strip_tags(object.description), length: 160, separator: ' ')
-      end
-
-      meta.reverse_merge!({
-        keywords: current_store.meta_keywords,
-        description: current_store.meta_description,
-      }) if meta[:keywords].blank? or meta[:description].blank?
-      meta
-    end
-
-    def meta_data_tags
-      meta_data.map do |name, content|
-        tag('meta', name: name, content: content)
-      end.join("\n")
-    end
-
-    def method_missing(method_name, *args, &block)
-      if image_style = image_style_from_method_name(method_name)
-        define_image_method(image_style)
-        self.send(method_name, *args)
-      else
-        super
-      end
-    end
-
-    def pretty_time(time)
-      [I18n.l(time.to_date, format: :long), time.strftime("%l:%M %p")].join(" ")
-    end
-
-    def seo_url(taxon)
-      return spree.nested_taxons_path(taxon.permalink)
-    end
-
-    # human readable list of variant options
-    def variant_options(v, options={})
-      v.options_text
-    end
-
-    private
-
-    def create_product_image_tag(image, product, options, style)
-      options.reverse_merge! alt: image.alt.blank? ? product.name : image.alt
-      image_tag image.attachment.url(style), options
-    end
-
-    def define_image_method(style)
-      self.class.send :define_method, "#{style}_image" do |product, *options|
-        options = options.first || {}
-        options[:alt] ||= product.name
-        if product.images.empty?
-          if !product.is_a?(Spree::Variant) && !product.variant_images.empty?
-            create_product_image_tag(product.variant_images.first, product, options, style)
-          else
-            if product.is_a?(Variant) && !product.product.variant_images.empty?
-              create_product_image_tag(product.product.variant_images.first, product, options, style)
-            else
-              image_tag "noimage/#{style}.png", options
-            end
-          end
-        else
-          create_product_image_tag(product.images.first, product, options, style)
+  module Admin
+    module BaseHelper
+      def flash_alert flash
+        if flash.present?
+          message = flash[:error] || flash[:notice] || flash[:success]
+          flash_class = "danger" if flash[:error]
+          flash_class = "info" if flash[:notice]
+          flash_class = "success" if flash[:success]
+          flash_div = content_tag(:div, message, class: "alert alert-#{flash_class} alert-auto-disappear")
+          content_tag(:div, flash_div, class: 'col-md-12')          
         end
       end
-    end
 
-    # Returns style of image or nil
-    def image_style_from_method_name(method_name)
-      if method_name.to_s.match(/_image$/) && style = method_name.to_s.sub(/_image$/, '')
-        possible_styles = Spree::Image.attachment_definitions[:attachment][:styles]
-        style if style.in? possible_styles.with_indifferent_access
+      def field_container(model, method, options = {}, &block)
+        css_classes = options[:class].to_a
+        css_classes << 'field'
+        if error_message_on(model, method).present?
+          css_classes << 'withError'
+        end
+        content_tag(:div, capture(&block), class: css_classes.join(' '), id: "#{model}_#{method}_field")
       end
+
+      def error_message_on(object, method, options = {})
+        object = convert_to_model(object)
+        obj = object.respond_to?(:errors) ? object : instance_variable_get("@#{object}")
+
+        if obj && obj.errors[method].present?
+          errors = obj.errors[method].map { |err| h(err) }.join('<br />').html_safe
+          content_tag(:span, errors, class: 'formError')
+        else
+          ''
+        end
+      end
+
+      def datepicker_field_value(date)
+        unless date.blank?
+          l(date, format: Spree.t('date_picker.format', default: '%Y/%m/%d'))
+        else
+          nil
+        end
+      end
+
+      def preference_field_tag(name, value, options)
+        case options[:type]
+        when :integer
+          text_field_tag(name, value, preference_field_options(options))
+        when :boolean
+          hidden_field_tag(name, 0, id: "#{name}_hidden") +
+          check_box_tag(name, 1, value, preference_field_options(options))
+        when :string
+          text_field_tag(name, value, preference_field_options(options))
+        when :password
+          password_field_tag(name, value, preference_field_options(options))
+        when :text
+          text_area_tag(name, value, preference_field_options(options))
+        else
+          text_field_tag(name, value, preference_field_options(options))
+        end
+      end
+
+      def preference_field_for(form, field, options)
+        case options[:type]
+        when :integer
+          form.text_field(field, preference_field_options(options))
+        when :boolean
+          form.check_box(field, preference_field_options(options))
+        when :string
+          form.text_field(field, preference_field_options(options))
+        when :password
+          form.password_field(field, preference_field_options(options))
+        when :text
+          form.text_area(field, preference_field_options(options))
+        else
+          form.text_field(field, preference_field_options(options))
+        end
+      end
+
+      def preference_field_options(options)
+        field_options = case options[:type]
+        when :integer
+          {
+            size: 10,
+            class: 'input_integer form-control'
+          }
+        when :boolean
+          {}
+        when :string
+          {
+            size: 10,
+            class: 'input_string form-control'
+          }
+        when :password
+          {
+            size: 10,
+            class: 'password_string form-control'
+          }
+        when :text
+          {
+            rows: 15,
+            cols: 85,
+            class: 'form-control'
+          }
+        else
+          {
+            size: 10,
+            class: 'input_string form-control'
+          }
+        end
+
+        field_options.merge!({
+          readonly: options[:readonly],
+          disabled: options[:disabled],
+          size:     options[:size]
+        })
+      end
+
+      def preference_fields(object, form)
+        return unless object.respond_to?(:preferences)
+        object.preferences.keys.map{ |key|
+        if object.has_preference?(key)
+          form.label("preferred_#{key}", Spree.t(key) + ": ") +
+            preference_field_for(form, "preferred_#{key}", type: object.preference_type(key))
+        end
+        }.join("<br />").html_safe
+      end
+
+      # renders hidden field and link to remove record using nested_attributes
+      def link_to_icon_remove_fields(f)
+        url = f.object.persisted? ? [:admin, f.object] : '#'
+        link_to_with_icon('delete', '', url, class: "spree_remove_fields btn btn-sm btn-danger", data: {action: 'remove'}, title: Spree.t(:remove)) + f.hidden_field(:_destroy)
+      end
+
+      def spree_dom_id(record)
+        dom_id(record, 'spree')
+      end
+
+      I18N_PLURAL_MANY_COUNT = 2.1
+      def plural_resource_name(resource_class)
+        resource_class.model_name.human(count: I18N_PLURAL_MANY_COUNT)
+      end
+
+      private
+        def attribute_name_for(field_name)
+          field_name.gsub(' ', '_').downcase
+        end
     end
   end
 end

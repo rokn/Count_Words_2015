@@ -1,17 +1,19 @@
-require_dependency 'spree/shipping_calculator'
+require_dependency 'spree/calculator'
 
 module Spree
-  module Calculator::Shipping
-    class FlatRate < ShippingCalculator
-      preference :amount, :decimal, default: 0
-      preference :currency, :string, default: ->{ Spree::Config[:currency] }
+  class Calculator::FlatRate < Calculator
+    preference :amount, :decimal, default: 0
+    preference :currency, :string, default: ->{ Spree::Config[:currency] }
 
-      def self.description
-        Spree.t(:shipping_flat_rate_per_order)
-      end
+    def self.description
+      Spree.t(:flat_rate_per_order)
+    end
 
-      def compute_package(package)
-        self.preferred_amount
+    def compute(object=nil)
+      if object && preferred_currency.upcase == object.currency.upcase
+        preferred_amount
+      else
+        0
       end
     end
   end

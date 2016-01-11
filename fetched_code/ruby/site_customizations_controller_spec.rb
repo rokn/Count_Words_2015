@@ -1,48 +1,45 @@
 require 'rails_helper'
 
-describe Admin::SiteCustomizationsController do
+describe SiteCustomizationsController do
 
-  it "is a subclass of AdminController" do
-    expect(Admin::UsersController < Admin::AdminController).to eq(true)
+  before do
+    SiteCustomization.clear_cache!
   end
 
-  context 'while logged in as an admin' do
-    before do
-      @user = log_in(:admin)
-    end
+  it 'can deliver enabled css' do
+    SiteCustomization.create!(name: '1',
+                              user_id: -1,
+                              enabled: true,
+                              mobile_stylesheet: '.a1{margin: 1px;}',
+                              stylesheet: '.b1{margin: 1px;}'
+                             )
 
-    context ' .index' do
-      it 'returns success' do
-        SiteCustomization.create!(name: 'my name', user_id: Fabricate(:user).id, header: "my awesome header", stylesheet: "my awesome css")
-        xhr :get, :index
-        expect(response).to be_success
-      end
+    SiteCustomization.create!(name: '2',
+                              user_id: -1,
+                              enabled: true,
+                              mobile_stylesheet: '.a2{margin: 1px;}',
+                              stylesheet: '.b2{margin: 1px;}'
+                             )
 
-      it 'returns JSON' do
-        xhr :get, :index
-        expect(::JSON.parse(response.body)).to be_present
-      end
-    end
+    get :show, key: SiteCustomization::ENABLED_KEY, format: :css, target: 'mobile'
+    expect(response.body).to match(/\.a1.*\.a2/m)
 
-    context ' .create' do
-      it 'returns success' do
-        xhr :post, :create, site_customization: {name: 'my test name'}
-        expect(response).to be_success
-      end
-
-      it 'returns json' do
-        xhr :post, :create, site_customization: {name: 'my test name'}
-        expect(::JSON.parse(response.body)).to be_present
-      end
-
-      it 'logs the change' do
-        StaffActionLogger.any_instance.expects(:log_site_customization_change).once
-        xhr :post, :create, site_customization: {name: 'my test name'}
-      end
-    end
-
+    get :show, key: SiteCustomization::ENABLED_KEY, format: :css
+    expect(response.body).to match(/\.b1.*\.b2/m)
   end
 
+  it 'can deliver specific css' do
+    c = SiteCustomization.create!(name: '1',
+                              user_id: -1,
+                              enabled: true,
+                              mobile_stylesheet: '.a1{margin: 1px;}',
+                              stylesheet: '.b1{margin: 1px;}'
+                             )
 
+    get :show, key: c.key, format: :css, target: 'mobile'
+    expect(response.body).to match(/\.a1/)
 
+    get :show, key: c.key, format: :css
+    expect(response.body).to match(/\.b1/)
+  end
 end

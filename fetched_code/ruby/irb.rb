@@ -1,35 +1,29 @@
+require "formula"
+require "keg"
 require "irb"
 
-module IRB
-  @setup_done = false
+class Symbol
+  def f(*args)
+    Formulary.factory(to_s, *args)
+  end
+end
+class String
+  def f(*args)
+    Formulary.factory(self, *args)
+  end
+end
 
-  extend Module.new {
-    def parse_opts
+module Homebrew
+  def irb
+    if ARGV.include? "--examples"
+      puts "'v8'.f # => instance of the v8 formula"
+      puts ":hub.f.installed?"
+      puts ":lua.f.methods - 1.methods"
+      puts ":mpd.f.recursive_dependencies.reject(&:installed?)"
+    else
+      ohai "Interactive Homebrew Shell"
+      puts "Example commands available with: brew irb --examples"
+      IRB.start
     end
-
-    def start_within(binding)
-      unless @setup_done
-        setup(nil)
-        @setup_done = true
-      end
-
-      workspace = WorkSpace.new(binding)
-      irb = Irb.new(workspace)
-
-      @CONF[:IRB_RC].call(irb.context) if @CONF[:IRB_RC]
-      @CONF[:MAIN_CONTEXT] = irb.context
-
-      trap("SIGINT") do
-        irb.signal_handle
-      end
-
-      begin
-        catch(:IRB_EXIT) do
-          irb.eval_input
-        end
-      ensure
-        irb_at_exit
-      end
-    end
-  }
+  end
 end

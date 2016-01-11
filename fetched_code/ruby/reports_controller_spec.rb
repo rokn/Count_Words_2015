@@ -1,65 +1,42 @@
-require 'rails_helper'
+require 'spec_helper'
 
-describe Admin::ReportsController do
+describe Spree::Admin::ReportsController, :type => :controller do
+  stub_authorization!
 
-  it "is a subclass of AdminController" do
-    expect(Admin::ReportsController < Admin::AdminController).to eq(true)
-  end
+  describe 'ReportsController.available_reports' do
+    it 'should contain sales_total' do
+      expect(Spree::Admin::ReportsController.available_reports.keys.include?(:sales_total)).to be true
+    end
 
-  context 'while logged in as an admin' do
-    let!(:admin) { log_in(:admin) }
-    let(:user) { Fabricate(:user) }
-
-
-    context '.show' do
-
-      context "invalid id form" do
-        let(:invalid_id) { "!!&asdfasdf" }
-
-        it "never calls Report.find" do
-          Report.expects(:find).never
-          xhr :get, :show, type: invalid_id
-        end
-
-        it "returns 404" do
-          xhr :get, :show, type: invalid_id
-          expect(response.status).to eq(404)
-        end
-      end
-
-      context "valid type form" do
-
-        context 'missing report' do
-          before do
-            Report.expects(:find).with('active', instance_of(Hash)).returns(nil)
-            xhr :get, :show, type: 'active'
-          end
-
-          it "renders the report as JSON" do
-            expect(response.status).to eq(404)
-          end
-        end
-
-        context 'a report is found' do
-          before do
-            Report.expects(:find).with('active', instance_of(Hash)).returns(Report.new('active'))
-            xhr :get, :show, type: 'active'
-          end
-
-          it "renders the report as JSON" do
-            expect(response).to be_success
-          end
-
-          it "renders the report as JSON" do
-            expect(::JSON.parse(response.body)).to be_present
-          end
-
-        end
-
-      end
-
+    it 'should have the proper sales total report description' do
+      expect(Spree::Admin::ReportsController.available_reports[:sales_total][:description]).to eql('Sales Total For All Orders')
     end
 
   end
 
+  describe 'ReportsController.add_available_report!' do
+    context 'when adding the report name' do
+      it 'should contain the report' do
+        Spree::Admin::ReportsController.add_available_report!(:some_report)
+        expect(Spree::Admin::ReportsController.available_reports.keys.include?(:some_report)).to be true
+      end
+    end
+  end
+
+  describe 'GET index' do
+    it 'should be ok' do
+      spree_get :index
+      expect(response).to be_ok
+    end
+  end
+
+  it 'should respond to model_class as Spree::AdminReportsController' do
+    expect(controller.send(:model_class)).to eql(Spree::Admin::ReportsController)
+  end
+
+  after(:each) do
+    Spree::Admin::ReportsController.available_reports.delete_if do |key, value|
+      key != :sales_total
+    end
+  end
 end

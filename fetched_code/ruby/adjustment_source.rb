@@ -1,23 +1,60 @@
-shared_examples_for "an adjustment source" do
-  subject(:source) { described_class.create }
+module Spree
+  module AdjustmentSource
+    extend ActiveSupport::Concern
 
-  before do
-    allow(Spree::Adjustable::AdjustmentsUpdater).to receive(:update)
-    order.adjustments.create(order: order, amount: 10, label: 'Adjustment', source: source)
-  end
-
-  describe '#destroy' do
-    before { source.destroy }
-
-    context 'when order incomplete' do
-      let(:order) { create(:order_with_line_items) }
-      it { expect(order.adjustments.count).to eq(0) }
+    included do
+      has_many :adjustments, as: :source
+      before_destroy :deals_with_adjustments_for_deleted_source
     end
 
-    context 'when order is complete' do
-      let(:order) { create(:completed_order_with_totals) }
-      it { expect(order.adjustments.count).to eq(1) }
-      it { expect(order.adjustments.reload.first.source).to be_nil }
+    protected
+
+    def create_adjustment(order, adjustable, included = nil)
+      amount = compute_amount(adjustable)
+      return if amount == 0
+      adjustments.new(order: order,
+                      adjustable: adjustable,
+                      label: label,
+                      amount: amount,
+                      included: included).save
+    end
+
+    def create_unique_adjustment(order, adjustable)
+      return if already_adjusted?(adjustable)
+      create_adjustment(order, adjustable)
+    end
+
+    def create_unique_adjustments(order, adjustables)
+      adjustables.where.not(id: already_adjusted_ids(order)).map do |adjustable|
+        create_adjustment(order, adjustable) if !block_given? || yield(adjustable)
+      end.any?
+    end
+
+    private
+
+    def already_adjusted_ids(order)
+      adjustments.where(order: order).pluck(:adjustable_id)
+    end
+
+    def already_adjusted?(adjustable)
+      adjustments.where(adjustable: adjustable).exists?
+    end
+
+    def deals_with_adjustments_for_deleted_source
+      adjustment_scope = adjustments.includes(:order).references(:spree_orders)
+
+      # For incomplete orders, remove the adjustment completely.
+      adjustment_scope.where("spree_orders.completed_at IS NULL").destroy_all
+
+      # For complete orders, the source will be invalid.
+      # Therefore we nullify the source_id, leaving the adjustment in place.
+      # This would mean that the order's total is not altered at all.
+      adjustment_scope.where("spree_orders.completed_at IS NOT NULL").each do |adjustment|
+        adjustment.update_columns(
+          source_id: nil,
+          updated_at: Time.current,
+        )
+      end
     end
   end
 end

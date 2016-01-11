@@ -1,51 +1,48 @@
 module Spree
-  module Api
-    module V1
-      class OptionTypesController < Spree::Api::BaseController
-        def index
-          if params[:ids]
-            @option_types = Spree::OptionType.includes(:option_values).accessible_by(current_ability, :read).where(id: params[:ids].split(','))
-          else
-            @option_types = Spree::OptionType.includes(:option_values).accessible_by(current_ability, :read).load.ransack(params[:q]).result
-          end
-          respond_with(@option_types)
-        end
+  module Admin
+    class OptionTypesController < ResourceController
+      before_action :setup_new_option_value, only: :edit
 
-        def show
-          @option_type = Spree::OptionType.accessible_by(current_ability, :read).find(params[:id])
-          respond_with(@option_type)
-        end
-
-        def create
-          authorize! :create, Spree::OptionType
-          @option_type = Spree::OptionType.new(option_type_params)
-          if @option_type.save
-            render :show, :status => 201
-          else
-            invalid_resource!(@option_type)
+      def update_values_positions
+        ActiveRecord::Base.transaction do
+          params[:positions].each do |id, index|
+            Spree::OptionValue.where(id: id).update_all(position: index)
           end
         end
 
-        def update
-          @option_type = Spree::OptionType.accessible_by(current_ability, :update).find(params[:id])
-          if @option_type.update_attributes(option_type_params)
-            render :show
-          else
-            invalid_resource!(@option_type)
-          end
+        respond_to do |format|
+          format.html { redirect_to admin_product_variants_url(params[:product_id]) }
+          format.js { render text: 'Ok' }
         end
-
-        def destroy
-          @option_type = Spree::OptionType.accessible_by(current_ability, :destroy).find(params[:id])
-          @option_type.destroy
-          render :text => nil, :status => 204
-        end
-
-        private
-          def option_type_params
-            params.require(:option_type).permit(permitted_option_type_attributes)
-          end
       end
+
+      protected
+
+        def location_after_save
+          if @option_type.created_at == @option_type.updated_at
+            edit_admin_option_type_url(@option_type)
+          else
+            admin_option_types_url
+          end
+        end
+
+
+      private
+        def load_product
+          @product = Product.friendly.find(params[:product_id])
+        end
+
+        def setup_new_option_value
+          @option_type.option_values.build if @option_type.option_values.empty?
+        end
+
+        def set_available_option_types
+          @available_option_types = if @product.option_type_ids.any?
+            OptionType.where.not(id: @product.option_type_ids)
+          else
+            OptionType.all
+          end
+        end
     end
   end
 end

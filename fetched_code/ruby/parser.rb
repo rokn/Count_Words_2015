@@ -1,21 +1,66 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+module HTTP
+  class Response
+    class Parser
+      attr_reader :headers
 
-module Diaspora
-  module Parser
-    def self.from_xml(xml)
-      doc = Nokogiri::XML(xml) {|cfg| cfg.noblanks }
-      return unless body = doc.xpath("/XML/post").children.first
-      class_name = body.name.gsub("-", "/")
-      ::Logging::Logger["XMLLogger"].debug "from_xml: #{body}"
-      begin
-        class_name.camelize.constantize.from_xml body.to_s
-      rescue NameError => e
-        # A pods is trying to federate an object we don't recognize.
-        # i.e. their codebase is different from ours.
-        ::Logging::Logger[self].warn("Error while parsing the xml: #{e.message}")
-        nil
+      def initialize
+        @parser = HTTP::Parser.new(self)
+        reset
+      end
+
+      def add(data)
+        @parser << data
+      end
+      alias_method :<<, :add
+
+      def headers?
+        !!@headers
+      end
+
+      def http_version
+        @parser.http_version.join(".")
+      end
+
+      def status_code
+        @parser.status_code
+      end
+
+      #
+      # HTTP::Parser callbacks
+      #
+
+      def on_headers_complete(headers)
+        @headers = headers
+      end
+
+      def on_body(chunk)
+        if @chunk
+          @chunk << chunk
+        else
+          @chunk = chunk
+        end
+      end
+
+      def chunk
+        chunk  = @chunk
+        @chunk = nil
+        chunk
+      end
+
+      def on_message_complete
+        @finished = true
+      end
+
+      def reset
+        @parser.reset!
+
+        @finished = false
+        @headers  = nil
+        @chunk    = nil
+      end
+
+      def finished?
+        @finished
       end
     end
   end

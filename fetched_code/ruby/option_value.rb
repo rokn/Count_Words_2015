@@ -1,49 +1,22 @@
 module Spree
-  class Promotion
-    module Rules
-      class OptionValue < PromotionRule
-        MATCH_POLICIES = %w(any)
-        preference :match_policy, :string, default: MATCH_POLICIES.first
-        preference :eligible_values, :hash
+  class OptionValue < Spree::Base
+    belongs_to :option_type, class_name: 'Spree::OptionType', touch: true, inverse_of: :option_values
+    acts_as_list scope: :option_type
 
-        def applicable?(promotable)
-          promotable.is_a?(Spree::Order)
-        end
+    has_many :option_value_variants, class_name: 'Spree::OptionValueVariant'
+    has_many :variants, through: :option_value_variants, class_name: 'Spree::Variant'
 
-        def eligible?(promotable, _options = {})
-          case preferred_match_policy
-          when 'any'
-            promotable.line_items.any? { |item| actionable?(item) }
-          end
-        end
+    with_options presence: true do
+      validates :name, uniqueness: { scope: :option_type_id, allow_blank: true }
+      validates :presentation
+    end
 
-        def actionable?(line_item)
-          pid = line_item.product.id
-          ovids = line_item.variant.option_values.pluck(:id)
+    after_touch :touch_all_variants
 
-          product_ids.include?(pid) && (value_ids(pid) - ovids).empty?
-        end
+    self.whitelisted_ransackable_attributes = ['presentation']
 
-        def preferred_eligible_values_with_numerification
-          values = preferred_eligible_values_without_numerification || {}
-          Hash[values.keys.map(&:to_i).zip(
-            values.values.map do |v|
-              (v.is_a?(Array) ? v : v.split(",")).map(&:to_i)
-            end
-          )]
-        end
-        alias_method_chain :preferred_eligible_values, :numerification
-
-        private
-
-        def product_ids
-          preferred_eligible_values.keys
-        end
-
-        def value_ids(product_id)
-          preferred_eligible_values[product_id]
-        end
-      end
+    def touch_all_variants
+      variants.update_all(updated_at: Time.current)
     end
   end
 end

@@ -1,81 +1,40 @@
-require 'spec_helper'
-require Rails.root.join('spec', 'shared_behaviors', 'stream')
+require 'rails_helper'
+require 'demon/base'
 
-describe Stream::Base do
-  before do
-    @stream = Stream::Base.new(alice)
-  end
+describe Demon do
 
-  describe '#contacts_link' do
-    it 'should default to your contacts page' do
-      expect(@stream.contacts_link).to match(/contacts/)
+  class RudeDemon < Demon::Base
+    def self.prefix
+      "rude"
+    end
+
+    def after_fork
+      Signal.trap("HUP"){}
+      Signal.trap("TERM"){}
+      sleep 999999
     end
   end
 
-  describe '#stream_posts' do
-    it "should returns the posts.for_a_stream" do
-      posts = double
-      allow(@stream).to receive(:posts).and_return(posts)
-      allow(@stream).to receive(:like_posts_for_stream!)
+  it "can terminate rude demons" do
 
-      expect(posts).to receive(:for_a_stream).with(anything, anything, alice).and_return(posts)
-      @stream.stream_posts
-    end
+    skip("forking rspec has side effects")
+    # Forking rspec has all sorts of weird side effects
+    #  this spec works but we must skip it to keep rspec
+    #  state happy
 
-    context "when alice has liked some posts" do
-      before do
-        bob.post(:status_message, :text => "sup", :to => bob.aspects.first.id)
-        @liked_status = bob.posts.last
-        @like = FactoryGirl.create(:like, :target => @liked_status, :author => alice.person)
-      end
 
-      it "marks the posts as liked" do
-        expect(@stream.stream_posts.first.user_like.id).to eq(@like.id)
-      end
-    end
-  end
+    RudeDemon.start
+    _,demon = RudeDemon.demons.first
+    pid = demon.pid
+    wait_for {
+      demon.alive?
+    }
 
-  describe '.can_comment?' do
-    before do
-      @person = FactoryGirl.create(:person)
-      allow(@stream).to receive(:people).and_return([bob.person, eve.person, @person])
-    end
+    demon.stop_timeout = 0.05
+    demon.stop
+    demon.start
 
-    it 'allows me to comment on my local contacts post' do
-      post = FactoryGirl.create(:status_message, :author => bob.person)
-      expect(@stream.can_comment?(post)).to be true
-    end
-
-    it 'allows me to comment on my own post' do
-      post = FactoryGirl.create(:status_message, :author => alice.person)
-      expect(@stream.can_comment?(post)).to be true
-    end
-
-    it 'allows me to comment on any local public post' do
-      post = FactoryGirl.create(:status_message, :author => eve.person)
-      expect(@stream.can_comment?(post)).to be true
-    end
-
-    it 'allows me to comment on a remote contacts post' do
-      Contact.create!(:user => @stream.user, :person => @person)
-      post = FactoryGirl.create(:status_message, :author => @person)
-      expect(@stream.can_comment?(post)).to be true
-    end
-
-    it 'returns false if person is remote and not a contact' do
-      post = FactoryGirl.create(:status_message, :author => @person)
-      expect(@stream.can_comment?(post)).to be false
-    end
-  end
-
-  describe '#people' do
-    it 'excludes blocked people' do
-      expect(@stream).to receive(:stream_posts).and_return(double.as_null_object)
-      @stream.people
-    end
-  end
-
-  describe 'shared behaviors' do
-    it_should_behave_like 'it is a stream'
+    running = !!(Process.kill(0, pid)) rescue false
+    expect(running).to eq(false)
   end
 end

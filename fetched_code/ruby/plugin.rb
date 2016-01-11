@@ -1,23 +1,10 @@
-require 'discourse_plugin'
+# name: plugin-name
+# about: about: my plugin
+# version: 0.1
+# authors: Frank Zappa
 
-# /!\ WARNING /!\
-# This plugin has been extracted from the Discourse source code and has not been tested.
-# It really needs some love <3
-# /!\ WARNING /!\
-
-module DiscourseImgur
-
-  class Plugin < DiscoursePlugin
-
-    def setup
-      # add_setting(:enable_imgur, false)
-      # add_setting(:imgur_client_id, '')
-      # add_setting(:imgur_endpoint, "https://api.imgur.com/3/image.json")
-
-      # TODO: Mix the following logic in Upload#store_file
-      # return Imgur.store_file(file, image_info, upload_id) if SiteSetting.enable_imgur?
-    end
-
-  end
-
-end
+auth_provider :title => 'with Ubuntu',
+              :authenticator => Auth::OpenIdAuthenticator.new('ubuntu','https://login.ubuntu.com', trusted: true),
+              :message => 'Authenticating with Ubuntu (make sure pop up blockers are not enbaled)',
+              :frame_width => 1000,   # the frame size used for the pop up window, overrides default
+              :frame_height => 800

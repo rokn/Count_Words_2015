@@ -1,44 +1,38 @@
 module Spree
-  module Api
-    module V1
-      class StockMovementsController < Spree::Api::BaseController
-        before_action :stock_location, except: [:update, :destroy]
+  module Admin
+    class StockMovementsController < Spree::Admin::BaseController
+      respond_to :html
+      helper_method :stock_location
 
-        def index
-          authorize! :read, StockMovement
-          @stock_movements = scope.ransack(params[:q]).result.page(params[:page]).per(params[:per_page])
-          respond_with(@stock_movements)
-        end
+      def index
+        @stock_movements = stock_location.stock_movements.recent.
+          includes(:stock_item => { :variant => :product }).
+          page(params[:page])
+      end
 
-        def show
-          @stock_movement = scope.find(params[:id])
-          respond_with(@stock_movement)
-        end
+      def new
+        @stock_movement = stock_location.stock_movements.build
+      end
 
-        def create
-          authorize! :create, StockMovement
-          @stock_movement = scope.new(stock_movement_params)
-          if @stock_movement.save
-            respond_with(@stock_movement, status: 201, default_template: :show)
-          else
-            invalid_resource!(@stock_movement)
-          end
-        end
+      def create
+        @stock_movement = stock_location.stock_movements.build(stock_movement_params)
+        @stock_movement.save
+        flash[:success] = flash_message_for(@stock_movement, :successfully_created)
+        redirect_to admin_stock_location_stock_movements_path(stock_location)
+      end
 
-        private
+      def edit
+        @stock_movement = StockMovement.find(params[:id])
+      end
 
-        def stock_location
-          render 'spree/api/v1/shared/stock_location_required', status: 422 and return unless params[:stock_location_id]
-          @stock_location ||= StockLocation.accessible_by(current_ability, :read).find(params[:stock_location_id])
-        end
+      private
 
-        def scope
-          @stock_location.stock_movements.accessible_by(current_ability, :read)
-        end
+      def stock_location
+        @stock_location ||= StockLocation.find(params[:stock_location_id])
+      end
 
-        def stock_movement_params
-          params.require(:stock_movement).permit(permitted_stock_movement_attributes)
-        end
+      def stock_movement_params
+        params.require(:stock_movement).permit(:quantity, :stock_item_id, :action)
       end
     end
   end

@@ -1,16 +1,10 @@
-module TagsHelper
-  def looking_for_tag_link
-    return if search_query.include?('@') || normalize_tag_name(search_query).blank?
-    content_tag('small') do
-      t('people.index.looking_for', tag_link: tag_link(search_query)).html_safe
-    end
-  end
-
-  def normalize_tag_name(tag)
-    ActsAsTaggableOn::Tag.normalize(tag.to_s)
-  end
-
-  def tag_link(tag)
-    link_to("##{tag}", tag_path(name: normalize_tag_name(tag)))
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
+module Admin::TagsHelper
+  def link_to_confirm(tag)
+    link_to(t(:delete) + "?", confirm_admin_tag_path(tag), method: :get, remote: true)
   end
 end

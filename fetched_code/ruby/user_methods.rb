@@ -1,36 +1,42 @@
-class User
-  alias_method :share_with_original, :share_with
+module Spree
+  module UserMethods
+    extend ActiveSupport::Concern
 
-  def share_with(*args)
-    inlined_jobs do
-      share_with_original(*args)
+    include Spree::UserApiAuthentication
+    include Spree::UserPaymentSource
+    include Spree::UserReporting
+    include Spree::RansackableAttributes
+
+    included do
+      has_many :role_users, class_name: 'Spree::RoleUser', foreign_key: :user_id
+      has_many :spree_roles, through: :role_users, class_name: 'Spree::Role', source: :role
+
+      has_many :promotion_rule_users, class_name: 'Spree::PromotionRuleUser'
+      has_many :promotion_rules, through: :promotion_rule_users, class_name: 'Spree::PromotionRule'
+
+      has_many :orders, foreign_key: :user_id, class_name: "Spree::Order"
+
+      belongs_to :ship_address, class_name: 'Spree::Address'
+      belongs_to :bill_address, class_name: 'Spree::Address'
+
+      self.whitelisted_ransackable_associations = %w[bill_address ship_address]
+      self.whitelisted_ransackable_attributes = %w[id email]
     end
-  end
 
-  def post(class_name, opts = {})
-    inlined_jobs do
-      aspects = self.aspects_from_ids(opts[:to])
+    # has_spree_role? simply needs to return true or false whether a user has a role or not.
+    def has_spree_role?(role_in_question)
+      spree_roles.where(name: role_in_question.to_s).any?
+    end
 
-      p = build_post(class_name, opts)
-      p.aspects = aspects
-      if p.save!
-        self.aspects.reload
+    def last_incomplete_spree_order
+      orders.incomplete.
+        includes(line_items: [variant: [:images, :option_values, :product]]).
+        order('created_at DESC').
+        first
+    end
 
-        add_to_streams(p, aspects)
-        dispatch_opts = {
-          url: Rails.application.routes.url_helpers.post_url(
-            p,
-            host: AppConfig.pod_uri.to_s
-          ),
-          to:  opts[:to]}
-        dispatch_opts.merge!(:additional_subscribers => p.root.author) if class_name == :reshare
-        dispatch_post(p, dispatch_opts)
-      end
-      unless opts[:created_at]
-        p.created_at = Time.now - 1
-        p.save
-      end
-      p
+    def analytics_id
+      id
     end
   end
 end

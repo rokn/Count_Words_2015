@@ -1,170 +1,88 @@
-require "forwardable"
+module Rack
+  class MiniProfiler
+    module TimerStruct
 
-require "http/form_data"
-require "http/options"
-require "http/headers"
-require "http/connection"
-require "http/redirector"
-require "http/uri"
+      # This class holds the client timings
+      class Client < TimerStruct::Base
 
-module HTTP
-  # Clients make requests and receive responses
-  class Client
-    extend Forwardable
-    include Chainable
+        def self.init_instrumentation
+          %Q{
+            <script type="text/javascript">
+              mPt=function(){var t=[];return{t:t,probe:function(n){t.push({d:new Date(),n:n})}}}()
+            </script>
+          }
+        end
 
-    KEEP_ALIVE         = "Keep-Alive".freeze
-    CLOSE              = "close".freeze
+        # used by Railtie to instrument asset_tag for JS / CSS
+        def self.instrument(name, orig)
+          probe = "<script>mPt.probe('#{name}')</script>"
+          wrapped = probe
+          wrapped << orig
+          wrapped << probe
+          wrapped
+        end
 
-    HTTP_OR_HTTPS_RE   = %r{^https?://}i
 
-    def initialize(default_options = {})
-      @default_options = HTTP::Options.new(default_options)
-      @connection = nil
-      @state = :clean
-    end
+        def initialize(env={})
+          super
+        end
 
-    # Make an HTTP request
-    def request(verb, uri, opts = {})
-      opts    = @default_options.merge(opts)
-      uri     = make_request_uri(uri, opts)
-      headers = make_request_headers(opts)
-      body    = make_request_body(opts, headers)
-      proxy   = opts.proxy
+        def redirect_count
+          self[:redirect_count]
+        end
 
-      req = HTTP::Request.new(
-        :verb    => verb,
-        :uri     => uri,
-        :headers => headers,
-        :proxy   => proxy,
-        :body    => body
-      )
+        def timings
+          self[:timings]
+        end
 
-      res = perform(req, opts)
-      return res unless opts.follow
+        def self.init_from_form_data(env, page_struct)
+          timings = []
+          clientTimes, clientPerf, baseTime = nil
+          form = env['rack.request.form_hash']
 
-      Redirector.new(opts.follow).perform(req, res) do |request|
-        perform(request, opts)
-      end
-    end
+          clientPerf  = form['clientPerformance']           if form
+          clientTimes = clientPerf['timing']                if clientPerf
+          baseTime    = clientTimes['navigationStart'].to_i if clientTimes
+          return unless clientTimes && baseTime
 
-    # @!method persistent?
-    #   @see Options#persistent?
-    #   @return [Boolean] whenever client is persistent
-    def_delegator :default_options, :persistent?
+          probes     = form['clientProbes']
+          translated = {}
+          if probes && !["null", ""].include?(probes)
+            probes.each do |id, val|
+              name = val["n"]
+              translated[name] ||= {}
+              if translated[name][:start]
+                translated[name][:finish] = val["d"]
+              else
+                translated[name][:start]  = val["d"]
+              end
+            end
+          end
 
-    # Perform a single (no follow) HTTP request
-    def perform(req, options)
-      verify_connection!(req.uri)
+          translated.each do |name, data|
+            h = {"Name" => name, "Start" => data[:start].to_i - baseTime}
+            h["Duration"] = data[:finish].to_i - data[:start].to_i if data[:finish]
+            timings.push(h)
+          end
 
-      @state = :dirty
+          clientTimes.keys.find_all{|k| k =~ /Start$/ }.each do |k|
+            start    = clientTimes[k].to_i - baseTime
+            finish   = clientTimes[k.sub(/Start$/, "End")].to_i - baseTime
+            duration = 0
+            duration = finish - start if finish > start
+            name     = k.sub(/Start$/, "").split(/(?=[A-Z])/).map{|s| s.capitalize}.join(' ')
+            timings.push({"Name" => name, "Start" => start, "Duration" => duration}) if start >= 0
+          end
 
-      @connection ||= HTTP::Connection.new(req, options)
+          clientTimes.keys.find_all{|k| !(k =~ /(End|Start)$/)}.each do |k|
+            timings.push("Name" => k, "Start" => clientTimes[k].to_i - baseTime, "Duration" => -1)
+          end
 
-      unless @connection.failed_proxy_connect?
-        @connection.send_request(req)
-        @connection.read_headers!
-      end
-
-      res = Response.new(
-        :status     => @connection.status_code,
-        :version    => @connection.http_version,
-        :headers    => @connection.headers,
-        :connection => @connection,
-        :encoding   => options.encoding,
-        :uri        => req.uri
-      )
-
-      @connection.finish_response if req.verb == :head
-      @state = :clean
-
-      res
-    rescue
-      close
-      raise
-    end
-
-    def close
-      @connection.close if @connection
-      @connection = nil
-      @state = :clean
-    end
-
-    private
-
-    # Verify our request isn't going to be made against another URI
-    def verify_connection!(uri)
-      if default_options.persistent? && uri.origin != default_options.persistent
-        fail StateError, "Persistence is enabled for #{default_options.persistent}, but we got #{uri.origin}"
-      # We re-create the connection object because we want to let prior requests
-      # lazily load the body as long as possible, and this mimics prior functionality.
-      elsif @connection && (!@connection.keep_alive? || @connection.expired?)
-        close
-      # If we get into a bad state (eg, Timeout.timeout ensure being killed)
-      # close the connection to prevent potential for mixed responses.
-      elsif @state == :dirty
-        close
-      end
-    end
-
-    # Merges query params if needed
-    #
-    # @param [#to_s] uri
-    # @return [URI]
-    def make_request_uri(uri, opts)
-      uri = uri.to_s
-
-      if default_options.persistent? && uri !~ HTTP_OR_HTTPS_RE
-        uri = "#{default_options.persistent}#{uri}"
-      end
-
-      uri = HTTP::URI.parse uri
-
-      if opts.params && !opts.params.empty?
-        uri.query = [uri.query, HTTP::URI.form_encode(opts.params)].compact.join("&")
-      end
-
-      # Some proxies (seen on WEBRick) fail if URL has
-      # empty path (e.g. `http://example.com`) while it's RFC-complaint:
-      # http://tools.ietf.org/html/rfc1738#section-3.1
-      uri.path = "/" if uri.path.empty?
-
-      uri
-    end
-
-    # Creates request headers with cookies (if any) merged in
-    def make_request_headers(opts)
-      headers = opts.headers
-
-      # Tell the server to keep the conn open
-      if default_options.persistent?
-        headers[Headers::CONNECTION] = KEEP_ALIVE
-      else
-        headers[Headers::CONNECTION] = CLOSE
-      end
-
-      cookies = opts.cookies.values
-      unless cookies.empty?
-        cookies = opts.headers.get(Headers::COOKIE).concat(cookies).join("; ")
-        headers[Headers::COOKIE] = cookies
-      end
-
-      headers
-    end
-
-    # Create the request body object to send
-    def make_request_body(opts, headers)
-      case
-      when opts.body
-        opts.body
-      when opts.form
-        form = HTTP::FormData.create opts.form
-        headers[Headers::CONTENT_TYPE]   ||= form.content_type
-        headers[Headers::CONTENT_LENGTH] ||= form.content_length
-        form.to_s
-      when opts.json
-        headers[Headers::CONTENT_TYPE] ||= "application/json"
-        MimeType[:json].encode opts.json
+          TimerStruct::Client.new.tap do |rval|
+            rval[:redirect_count] = env['rack.request.form_hash']['clientPerformance']['navigation']['redirect_count']
+            rval[:timings]        = timings
+          end
+        end
       end
     end
   end

@@ -1,40 +1,13 @@
-RSpec.describe HTTP::Response::Body do
-  let(:client)   { double(:sequence_id => 0) }
-  let(:chunks)   { ["Hello, ", "World!"] }
+RSpec.describe HTTP::Options, "body" do
+  let(:opts) { HTTP::Options.new }
 
-  before         { allow(client).to receive(:readpartial) { chunks.shift } }
-
-  subject(:body) { described_class.new client, Encoding::UTF_8 }
-
-  it "streams bodies from responses" do
-    expect(subject.to_s).to eq "Hello, World!"
+  it "defaults to nil" do
+    expect(opts.body).to be nil
   end
 
-  context "when body empty" do
-    let(:chunks) { [""] }
-
-    it "returns responds to empty? with true" do
-      expect(subject).to be_empty
-    end
-  end
-
-  describe "#readpartial" do
-    context "with size given" do
-      it "passes value to underlying client" do
-        expect(client).to receive(:readpartial).with(42)
-        body.readpartial 42
-      end
-    end
-
-    context "without size given" do
-      it "does not blows up" do
-        expect { body.readpartial }.to_not raise_error
-      end
-
-      it "calls underlying client readpartial without specific size" do
-        expect(client).to receive(:readpartial).with no_args
-        body.readpartial
-      end
-    end
+  it "may be specified with with_body" do
+    opts2 = opts.with_body("foo")
+    expect(opts.body).to be nil
+    expect(opts2.body).to eq("foo")
   end
 end

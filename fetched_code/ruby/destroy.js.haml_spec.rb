@@ -5,39 +5,47 @@
 #------------------------------------------------------------------------------
 require 'spec_helper'
 
-describe "/contacts/destroy" do
-  include ContactsHelper
-
+describe "admin/users/destroy" do
   before do
-    login_and_assign
-    assign(:contact, @contact = FactoryGirl.create(:contact))
-    assign(:contacts, [@contact].paginate)
+    login_and_assign(admin: true)
   end
 
-  it "should blind up destroyed contact partial" do
-    render
-    expect(rendered).to include("slideUp")
+  describe "user got deleted" do
+    before do
+      @user = FactoryGirl.create(:user)
+      @user.destroy
+      assign(:user, @user)
+    end
+
+    it "blinds up destroyed user partial" do
+      render
+
+      expect(rendered).to include('slideUp')
+    end
   end
 
-  it "should update contacts sidebar when called from contacts index" do
-    controller.request.env["HTTP_REFERER"] = "http://localhost/contacts"
-    render
+  describe "user was not deleted" do
+    before do
+      assign(:user, @user = FactoryGirl.create(:user))
+    end
 
-    expect(rendered).to include("#sidebar")
-    expect(rendered).to have_text("Recent Items")
-  end
+    it "should remove confirmation panel" do
+      render
 
-  it "should update pagination when called from contacts index" do
-    controller.request.env["HTTP_REFERER"] = "http://localhost/contacts"
-    render
+      expect(rendered).to include(%/crm.flick('#{dom_id(@user, :confirm)}', 'remove');/)
+    end
 
-    expect(rendered).to include("#paginate")
-  end
+    it "should shake user partial" do
+      render
 
-  it "should update recently viewed items when called from related asset" do
-    controller.request.env["HTTP_REFERER"] = "http://localhost/accounts/123"
-    render
+      expect(rendered).to include(%/$('#user_#{@user.id}').effect('shake'/)
+    end
 
-    expect(rendered).to include("#recently")
+    it "should show flash message" do
+      render
+
+      expect(rendered).to include('flash')
+      expect(rendered).to include(%/crm.flash('warning')/)
+    end
   end
 end

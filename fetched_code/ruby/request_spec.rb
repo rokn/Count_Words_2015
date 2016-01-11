@@ -1,166 +1,207 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+# coding: utf-8
 
-require 'spec_helper'
+RSpec.describe HTTP::Request do
+  let(:proxy)       { {} }
+  let(:headers)     { {:accept => "text/html"} }
+  let(:request_uri) { "http://example.com/foo?bar=baz" }
 
-describe Request do
-  before do
-    @aspect = alice.aspects.first
+  subject :request do
+    HTTP::Request.new(
+      :verb     => :get,
+      :uri      => request_uri,
+      :headers  => headers,
+      :proxy    => proxy
+    )
   end
 
-  describe 'validations' do
-    before do
-      @request = described_class.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
-    end
-
-    it 'is valid' do
-      expect(@request.sender).to eq(alice.person)
-      expect(@request.recipient).to   eq(eve.person)
-      expect(@request.aspect).to eq(@aspect)
-      expect(@request).to be_valid
-    end
-
-    it 'is from a person' do
-      @request.sender = nil
-      expect(@request).not_to be_valid
-    end
-
-    it 'is to a person' do
-      @request.recipient = nil
-      expect(@request).not_to be_valid
-    end
-
-    it 'is not necessarily into an aspect' do
-      @request.aspect = nil
-      expect(@request).to be_valid
-    end
-
-    it 'is not from an existing friend' do
-      Contact.create(:user => eve, :person => alice.person, :aspects => [eve.aspects.first])
-      expect(@request).not_to be_valid
-    end
-
-    it 'is not to yourself' do
-      @request = described_class.diaspora_initialize(:from => alice.person, :to => alice.person, :into => @aspect)
-      expect(@request).not_to be_valid
-    end
+  it "includes HTTP::Headers::Mixin" do
+    expect(described_class).to include HTTP::Headers::Mixin
   end
 
-  describe '#notification_type' do
-    it 'returns request_accepted' do
-      person = FactoryGirl.build:person
-
-      request = described_class.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
-      alice.contacts.create(:person_id => person.id)
-
-      expect(request.notification_type(alice, person)).to eq(Notifications::StartedSharing)
-    end
+  it "requires URI to have scheme part" do
+    expect { HTTP::Request.new(:verb => :get, :uri => "example.com/") }.to \
+      raise_error(HTTP::Request::UnsupportedSchemeError)
   end
 
-  describe '#subscribers' do
-    it 'returns an array with to field on a request' do
-      request = described_class.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
-      expect(request.subscribers(alice)).to match_array([eve.person])
-    end
+  it "provides a #scheme accessor" do
+    expect(request.scheme).to eq(:http)
   end
 
-  describe '#receive' do
-    it 'creates a contact' do
-      request = described_class.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
-      expect{
-        request.receive(eve, alice.person)
-      }.to change{
-        eve.contacts(true).size
-      }.by(1)
-    end
-
-    it 'sets mutual if a contact already exists' do
-      alice.share_with(eve.person, alice.aspects.first)
-
-      expect {
-        described_class.diaspora_initialize(:from => eve.person, :to => alice.person,
-                                    :into => eve.aspects.first).receive(alice, eve.person)
-      }.to change {
-        alice.contacts.find_by_person_id(eve.person.id).mutual?
-      }.from(false).to(true)
-
-    end
-
-    it 'sets sharing' do
-      described_class.diaspora_initialize(:from => eve.person, :to => alice.person,
-                                  :into => eve.aspects.first).receive(alice, eve.person)
-      expect(alice.contact_for(eve.person)).to be_sharing
-    end
-
-    it 'shares back if auto_following is enabled' do
-      alice.auto_follow_back = true
-      alice.auto_follow_back_aspect = alice.aspects.first
-      alice.save
-
-      described_class.diaspora_initialize(:from => eve.person, :to => alice.person,
-                                          :into => eve.aspects.first).receive(alice, eve.person)
-
-      expect(eve.contact_for( alice.person )).to be_sharing
-    end
-
-    it 'shares not back if auto_following is not enabled' do
-      alice.auto_follow_back = false
-      alice.auto_follow_back_aspect = alice.aspects.first
-      alice.save
-
-      described_class.diaspora_initialize(:from => eve.person, :to => alice.person,
-                                  :into => eve.aspects.first).receive(alice, eve.person)
-
-      expect(eve.contact_for(alice.person)).to be_nil
-    end
-
-    it 'shares not back if already sharing' do
-      alice.auto_follow_back = true
-      alice.auto_follow_back_aspect = alice.aspects.first
-      alice.save
-
-      contact = FactoryGirl.build:contact, :user => alice, :person => eve.person,
-                                  :receiving => true, :sharing => false
-      contact.save
-
-      expect(alice).not_to receive(:share_with)
-
-      described_class.diaspora_initialize(:from => eve.person, :to => alice.person,
-                                  :into => eve.aspects.first).receive(alice, eve.person)
-    end
-
-    it "queue a job to fetch public posts" do
-      expect(Diaspora::Fetcher::Public).to receive(:queue_for).exactly(1).times
-
-      described_class.diaspora_initialize(from: eve.person, to: alice.person,
-                                          into: eve.aspects.first).receive(alice, eve.person)
-    end
+  it "provides a #verb accessor" do
+    expect(subject.verb).to eq(:get)
   end
 
-  context 'xml' do
-    before do
-      @request = described_class.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
-      @xml = @request.to_xml.to_s
-    end
+  it "sets given headers" do
+    expect(subject["Accept"]).to eq("text/html")
+  end
 
-    describe 'serialization' do
-      it 'produces valid xml' do
-        expect(@xml).to include alice.person.diaspora_handle
-        expect(@xml).to include eve.person.diaspora_handle
-        expect(@xml).not_to include alice.person.exported_key
-        expect(@xml).not_to include alice.person.profile.first_name
+  describe "Host header" do
+    subject { request["Host"] }
+
+    context "was not given" do
+      it { is_expected.to eq "example.com" }
+
+      context "and request URI has non-standard port" do
+        let(:request_uri) { "http://example.com:3000/" }
+        it { is_expected.to eq "example.com:3000" }
       end
     end
 
-    context 'marshalling' do
-      it 'produces a request object' do
-        marshalled = described_class.from_xml @xml
+    context "was explicitly given" do
+      before { headers[:host] = "github.com" }
+      it { is_expected.to eq "github.com" }
+    end
+  end
 
-        expect(marshalled.sender).to eq(alice.person)
-        expect(marshalled.recipient).to eq(eve.person)
-        expect(marshalled.aspect).to be_nil
+  describe "User-Agent header" do
+    subject { request["User-Agent"] }
+
+    context "was not given" do
+      it { is_expected.to eq HTTP::Request::USER_AGENT }
+    end
+
+    context "was explicitly given" do
+      before { headers[:user_agent] = "MrCrawly/123" }
+      it { is_expected.to eq "MrCrawly/123" }
+    end
+  end
+
+  describe "#redirect" do
+    let(:headers)   { {:accept => "text/html"} }
+    let(:proxy)     { {:proxy_username => "douglas", :proxy_password => "adams"} }
+    let(:body)      { "The Ultimate Question" }
+
+    let :request do
+      HTTP::Request.new(
+        :verb    => :post,
+        :uri     => "http://example.com/",
+        :headers => headers,
+        :proxy   => proxy,
+        :body    => body
+      )
+    end
+
+    subject(:redirected) { request.redirect "http://blog.example.com/" }
+
+    its(:uri)     { is_expected.to eq HTTP::URI.parse "http://blog.example.com/" }
+
+    its(:verb)    { is_expected.to eq request.verb }
+    its(:body)    { is_expected.to eq request.body }
+    its(:proxy)   { is_expected.to eq request.proxy }
+
+    it "presets new Host header" do
+      expect(redirected["Host"]).to eq "blog.example.com"
+    end
+
+    context "with schema-less absolute URL given" do
+      subject(:redirected) { request.redirect "//another.example.com/blog" }
+
+      its(:uri)     { is_expected.to eq HTTP::URI.parse "http://another.example.com/blog" }
+
+      its(:verb)    { is_expected.to eq request.verb }
+      its(:body)    { is_expected.to eq request.body }
+      its(:proxy)   { is_expected.to eq request.proxy }
+
+      it "presets new Host header" do
+        expect(redirected["Host"]).to eq "another.example.com"
       end
+    end
+
+    context "with relative URL given" do
+      subject(:redirected) { request.redirect "/blog" }
+
+      its(:uri)     { is_expected.to eq HTTP::URI.parse "http://example.com/blog" }
+
+      its(:verb)    { is_expected.to eq request.verb }
+      its(:body)    { is_expected.to eq request.body }
+      its(:proxy)   { is_expected.to eq request.proxy }
+
+      it "keeps Host header" do
+        expect(redirected["Host"]).to eq "example.com"
+      end
+
+      context "with original URI having non-standard port" do
+        let :request do
+          HTTP::Request.new(
+            :verb    => :post,
+            :uri     => "http://example.com:8080/",
+            :headers => headers,
+            :proxy   => proxy,
+            :body    => body
+          )
+        end
+
+        its(:uri) { is_expected.to eq HTTP::URI.parse "http://example.com:8080/blog" }
+      end
+    end
+
+    context "with relative URL that misses leading slash given" do
+      subject(:redirected) { request.redirect "blog" }
+
+      its(:uri)     { is_expected.to eq HTTP::URI.parse "http://example.com/blog" }
+
+      its(:verb)    { is_expected.to eq request.verb }
+      its(:body)    { is_expected.to eq request.body }
+      its(:proxy)   { is_expected.to eq request.proxy }
+
+      it "keeps Host header" do
+        expect(redirected["Host"]).to eq "example.com"
+      end
+
+      context "with original URI having non-standard port" do
+        let :request do
+          HTTP::Request.new(
+            :verb    => :post,
+            :uri     => "http://example.com:8080/",
+            :headers => headers,
+            :proxy   => proxy,
+            :body    => body
+          )
+        end
+
+        its(:uri) { is_expected.to eq HTTP::URI.parse "http://example.com:8080/blog" }
+      end
+    end
+
+    context "with new verb given" do
+      subject { request.redirect "http://blog.example.com/", :get }
+      its(:verb) { is_expected.to be :get }
+    end
+  end
+
+  describe "#headline" do
+    subject(:headline) { request.headline }
+
+    it { is_expected.to eq "GET /foo?bar=baz HTTP/1.1" }
+
+    context "when URI contains encoded query" do
+      let(:encoded_query) { "t=1970-01-01T01%3A00%3A00%2B01%3A00" }
+      let(:request_uri) { "http://example.com/foo/?#{encoded_query}" }
+
+      it "does not unencodes query part" do
+        expect(headline).to eq "GET /foo/?#{encoded_query} HTTP/1.1"
+      end
+    end
+
+    context "when URI contains non-ASCII path" do
+      let(:request_uri) { "http://example.com/キョ" }
+
+      it "encodes non-ASCII path part" do
+        expect(headline).to eq "GET /%E3%82%AD%E3%83%A7 HTTP/1.1"
+      end
+    end
+
+    context "when URI contains fragment" do
+      let(:request_uri) { "http://example.com/foo#bar" }
+
+      it "omits fragment part" do
+        expect(headline).to eq "GET /foo HTTP/1.1"
+      end
+    end
+
+    context "with proxy" do
+      let(:proxy) { {:user => "user", :pass => "pass"} }
+      it { is_expected.to eq "GET http://example.com/foo?bar=baz HTTP/1.1" }
     end
   end
 end

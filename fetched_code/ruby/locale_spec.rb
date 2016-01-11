@@ -1,48 +1,58 @@
 require 'spec_helper'
 
-describe 'locale files' do
-  describe "cldr/plurals.rb" do
-    AVAILABLE_LANGUAGE_CODES.each do |locale|
-      describe "#{locale} plural rules" do
-        it "defines the keys for #{locale}" do
-          I18n.with_locale locale do
-            expect {
-              I18n.t 'i18n.plural.keys'
-            }.to_not raise_error
-          end
-        end
+describe 'setting locale', type: :feature do
+  def with_locale(locale)
+    I18n.locale = locale
+    Spree::Frontend::Config[:locale] = locale
+    yield
+    I18n.locale = 'en'
+    Spree::Frontend::Config[:locale] = 'en'
+  end
 
-        it "defines a valid pluralization function for #{locale}" do
-          I18n.with_locale locale do
-            expect {
-              rule = I18n.t 'i18n.plural.rule', resolve: false
-              rule.call(1)
-            }.to_not raise_error
-          end
-        end
+  context 'shopping cart link and page' do
+    before do
+      I18n.backend.store_translations(:fr,
+       spree: {
+         cart: 'Panier',
+         shopping_cart: 'Panier'
+      })
+    end
 
-        it "defines a valid javascript pluralization function for #{locale}" do
-          I18n.with_locale locale do
-            expect {
-              ExecJS.eval I18n.t('i18n.plural.js_rule')
-            }.to_not raise_error
-          end
-        end
+    it 'should be in french' do
+      with_locale('fr') do
+        visit spree.root_path
+        click_link 'Panier'
+        expect(page).to have_content('Panier')
       end
     end
   end
 
-  AVAILABLE_LANGUAGE_CODES.each do |locale|
-    ["diaspora/#{locale}.yml",
-     "devise/devise.#{locale}.yml",
-     "javascript/javascript.#{locale}.yml"].each do |file|
-      describe file do
-        it "has no syntax errors if it exists" do
-          file = Rails.root.join("config", "locales", file)
-          skip "Not yet available" unless File.exists? file
-          expect {
-            YAML.load_file file
-          }.to_not raise_error
+  context 'checkout form validation messages' do
+    include_context 'checkout setup'
+
+    let(:error_messages) do
+      {
+        'en' => 'This field is required.',
+        'fr' => 'Ce champ est obligatoire.',
+        'de' => 'Dieses Feld ist ein Pflichtfeld.',
+      }
+    end
+
+    def check_error_text(text)
+      %w(firstname lastname address1 city).each do |attr|
+        expect(find("#b#{attr} label.error").text).to eq(text)
+      end
+    end
+
+    it 'shows translated jquery.validate error messages', js: true do
+      visit spree.root_path
+      click_link mug.name
+      click_button 'add-to-cart-button'
+      error_messages.each do |locale, message|
+        with_locale(locale) do
+          visit '/checkout/address'
+          find('.form-buttons input[type=submit]').click
+          check_error_text message
         end
       end
     end

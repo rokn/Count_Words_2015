@@ -1,43 +1,64 @@
-describe Spree::Order, type: :model do
-  let(:order) { create(:order_with_totals) }
+require 'spec_helper'
 
-  context "ensure shipments will be updated" do
-    before { Spree::Shipment.create!(order: order, stock_location: create(:stock_location)) }
+describe "Shipments", type: :feature do
+  stub_authorization!
 
-    it "destroys current shipments" do
-      order.ensure_updated_shipments
-      expect(order.shipments).to be_empty
-    end
+  let!(:order) { create(:order_ready_to_ship, number: "R100", state: "complete", line_items_count: 5) }
 
-    it "puts order back in address state" do
-      order.ensure_updated_shipments
-      expect(order.state).to eq 'address'
-    end
-
-    it "resets shipment_total" do
-      order.update_column(:shipment_total, 5)
-      order.ensure_updated_shipments
-      expect(order.shipment_total).to eq(0)
-    end
-
-    context "except when order is completed, that's OrderInventory job" do
-      it "doesn't touch anything" do
-        allow(order).to receive_messages completed?: true
-        order.update_column(:shipment_total, 5)
-        order.shipments.create!(stock_location: create(:stock_location))
-
-        expect {
-          order.ensure_updated_shipments
-        }.not_to change { order.shipment_total }
-
-        expect {
-          order.ensure_updated_shipments
-        }.not_to change { order.shipments }
-
-        expect {
-          order.ensure_updated_shipments
-        }.not_to change { order.state }
+  # Regression test for #4025
+  context "a shipment without a shipping method" do
+    before do
+      order.shipments.each do |s|
+        # Deleting the shipping rates causes there to be no shipping methods
+        s.shipping_rates.delete_all
       end
+    end
+
+    it "can still be displayed" do
+      expect { visit spree.edit_admin_order_path(order) }.not_to raise_error
+    end
+  end
+
+  context "shipping an order", js: true do
+    before(:each) do
+      visit spree.admin_orders_path
+      within_row(1) do
+        click_link "R100"
+      end
+    end
+
+    it "can ship a completed order" do
+      click_on "Ship"
+      wait_for_ajax
+
+      expect(page).to have_content("shipped package")
+      expect(order.reload.shipment_state).to eq("shipped")
+    end
+  end
+
+  context "moving variants between shipments", js: true do
+    let!(:la) { create(:stock_location, name: "LA") }
+    before(:each) do
+      visit spree.admin_orders_path
+      within_row(1) do
+        click_link "R100"
+      end
+    end
+
+    it "can move a variant to a new and to an existing shipment" do
+      expect(order.shipments.count).to eq(1)
+
+      within_row(1) { click_icon :split }
+      targetted_select2 'LA', from: '#s2id_item_stock_location'
+      click_icon :save
+      wait_for_ajax
+      expect(page.find("#shipment_#{order.shipments.first.id}")).to be_present
+
+      within_row(2) { click_icon :split }
+      targetted_select2 "LA(#{order.reload.shipments.last.number})", from: '#s2id_item_stock_location'
+      click_icon :save
+      wait_for_ajax
+      expect(page.find("#shipment_#{order.reload.shipments.last.id}")).to be_present
     end
   end
 end

@@ -1,105 +1,198 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   t
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+require "forwardable"
+require "base64"
+require "time"
 
-class Request
-  include Diaspora::Federated::Base
-  include ActiveModel::Validations
+require "http/errors"
+require "http/headers"
+require "http/request/writer"
+require "http/version"
+require "http/uri"
 
-  attr_accessor :sender, :recipient, :aspect
+module HTTP
+  class Request
+    extend Forwardable
 
-  xml_accessor :sender_handle
-  xml_accessor :recipient_handle
+    include HTTP::Headers::Mixin
 
-  validates :sender, :presence => true
-  validates :recipient, :presence => true
+    # The method given was not understood
+    class UnsupportedMethodError < RequestError; end
 
-  validate :not_already_connected
-  validate :not_friending_yourself
+    # The scheme of given URI was not understood
+    class UnsupportedSchemeError < RequestError; end
 
-  # Initalize variables
-  # @note we should be using ActiveModel::Serialization for this
-  # @return [Request]
-  def self.diaspora_initialize(opts = {})
-    req = self.new
-    req.sender = opts[:from]
-    req.recipient = opts[:to]
-    req.aspect = opts[:into]
-    req
-  end
+    # Default User-Agent header value
+    USER_AGENT = "http.rb/#{HTTP::VERSION}".freeze
 
-  # Alias of sender_handle
-  # @return [String]
-  def diaspora_handle
-    sender_handle
-  end
+    # RFC 2616: Hypertext Transfer Protocol -- HTTP/1.1
+    METHODS = [:options, :get, :head, :post, :put, :delete, :trace, :connect]
 
-  # @note Used for XML marshalling
-  # @return [String]
-  def sender_handle
-    sender.diaspora_handle
-  end
-  def sender_handle= sender_handle
-    self.sender = Person.where(:diaspora_handle => sender_handle).first
-  end
+    # RFC 2518: HTTP Extensions for Distributed Authoring -- WEBDAV
+    METHODS.concat [:propfind, :proppatch, :mkcol, :copy, :move, :lock, :unlock]
 
-  # @note Used for XML marshalling
-  # @return [String]
-  def recipient_handle
-    recipient.diaspora_handle
-  end
-  def recipient_handle= recipient_handle
-    self.recipient = Person.where(:diaspora_handle => recipient_handle).first
-  end
+    # RFC 3648: WebDAV Ordered Collections Protocol
+    METHODS.concat [:orderpatch]
 
-  # Defines the abstract interface used in sending a corresponding [Notification] given the [Request]
-  # @param user [User]
-  # @param person [Person]
-  # @return [Notifications::StartedSharing]
-  def notification_type(user, person)
-    Notifications::StartedSharing
-  end
+    # RFC 3744: WebDAV Access Control Protocol
+    METHODS.concat [:acl]
 
-  # Defines the abstract interface used in sending the [Request]
-  # @param user [User]
-  # @return [Array<Person>] The recipient of the request
-  def subscribers(user)
-    [self.recipient]
-  end
+    # draft-dusseault-http-patch: PATCH Method for HTTP
+    METHODS.concat [:patch]
 
-  # Finds or initializes a corresponding [Contact], and will set Contact#sharing to true
-  # Follows back if user setting is set so
-  # @note A [Contact] may already exist if the [Request]'s recipient is sharing with the sender
-  # @return [Request]
-  def receive(user, person)
-    logger.info("event=receive payload_type=request sender=#{sender} to=#{recipient}")
+    # draft-reschke-webdav-search: WebDAV Search
+    METHODS.concat [:search]
 
-    contact = user.contacts.find_or_initialize_by(person_id: self.sender.id)
-    contact.sharing = true
-    contact.save
+    # Allowed schemes
+    SCHEMES = [:http, :https, :ws, :wss]
 
-    user.share_with(person, user.auto_follow_back_aspect) if user.auto_follow_back && !contact.receiving
+    # Default ports of supported schemes
+    PORTS = {
+      :http   => 80,
+      :https  => 443,
+      :ws     => 80,
+      :wss    => 443
+    }
 
-    # also, schedule to fetch a few public posts from that person
-    Diaspora::Fetcher::Public.queue_for(person)
+    # Method is given as a lowercase symbol e.g. :get, :post
+    attr_reader :verb
 
-    self
-  end
+    # Scheme is normalized to be a lowercase symbol e.g. :http, :https
+    attr_reader :scheme
 
-  private
+    # "Request URI" as per RFC 2616
+    # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
+    attr_reader :uri
+    attr_reader :proxy, :body, :version
 
-  # Checks if a [Contact] does not already exist between the requesting [User] and receiving [Person]
-  def not_already_connected
-    if sender && recipient && Contact.where(:user_id => self.recipient.owner_id, :person_id => self.sender.id).exists?
-      errors[:base] << 'You have already connected to this person'
+    # @option opts [String] :version
+    # @option opts [#to_s] :verb HTTP request method
+    # @option opts [HTTP::URI, #to_s] :uri
+    # @option opts [Hash] :headers
+    # @option opts [Hash] :proxy
+    # @option opts [String] :body
+    def initialize(opts)
+      @verb   = opts.fetch(:verb).to_s.downcase.to_sym
+      @uri    = normalize_uri(opts.fetch :uri)
+      @scheme = @uri.scheme.to_s.downcase.to_sym if @uri.scheme
+
+      fail(UnsupportedMethodError, "unknown method: #{verb}") unless METHODS.include?(@verb)
+      fail(UnsupportedSchemeError, "unknown scheme: #{scheme}") unless SCHEMES.include?(@scheme)
+
+      @proxy   = opts[:proxy] || {}
+      @body    = opts[:body]
+      @version = opts[:version] || "1.1"
+      @headers = HTTP::Headers.coerce(opts[:headers] || {})
+
+      @headers[Headers::HOST]        ||= default_host_header_value
+      @headers[Headers::USER_AGENT]  ||= USER_AGENT
     end
-  end
 
-  # Checks to see that the requesting [User] is not sending a request to himself
-  def not_friending_yourself
-    if self.recipient == self.sender
-      errors[:base] << 'You can not friend yourself'
+    # Returns new Request with updated uri
+    def redirect(uri, verb = @verb)
+      req = self.class.new(
+        :verb    => verb,
+        :uri     => @uri.join(uri),
+        :headers => headers,
+        :proxy   => proxy,
+        :body    => body,
+        :version => version
+      )
+
+      req[Headers::HOST] = req.uri.host
+      req
+    end
+
+    # Stream the request to a socket
+    def stream(socket)
+      include_proxy_authorization_header if using_authenticated_proxy? && !@uri.https?
+      Request::Writer.new(socket, body, headers, headline).stream
+    end
+
+    # Is this request using a proxy?
+    def using_proxy?
+      proxy && proxy.keys.size >= 2
+    end
+
+    # Is this request using an authenticated proxy?
+    def using_authenticated_proxy?
+      proxy && proxy.keys.size == 4
+    end
+
+    # Compute and add the Proxy-Authorization header
+    def include_proxy_authorization_header
+      headers[Headers::PROXY_AUTHORIZATION] = proxy_authorization_header
+    end
+
+    def proxy_authorization_header
+      digest = Base64.strict_encode64("#{proxy[:proxy_username]}:#{proxy[:proxy_password]}")
+      "Basic #{digest}"
+    end
+
+    # Setup tunnel through proxy for SSL request
+    def connect_using_proxy(socket)
+      Request::Writer.new(socket, nil, proxy_connect_headers, proxy_connect_header).connect_through_proxy
+    end
+
+    # Compute HTTP request header for direct or proxy request
+    def headline
+      request_uri = using_proxy? ? uri : uri.omit(:scheme, :authority)
+      "#{verb.to_s.upcase} #{request_uri.omit :fragment} HTTP/#{version}"
+    end
+
+    # Compute HTTP request header SSL proxy connection
+    def proxy_connect_header
+      "CONNECT #{host}:#{port} HTTP/#{version}"
+    end
+
+    # Headers to send with proxy connect request
+    def proxy_connect_headers
+      connect_headers = HTTP::Headers.coerce(
+        Headers::HOST        => headers[Headers::HOST],
+        Headers::USER_AGENT  => headers[Headers::USER_AGENT]
+      )
+
+      connect_headers[Headers::PROXY_AUTHORIZATION] = proxy_authorization_header if using_authenticated_proxy?
+
+      connect_headers
+    end
+
+    # Host for tcp socket
+    def socket_host
+      using_proxy? ? proxy[:proxy_address] : host
+    end
+
+    # Port for tcp socket
+    def socket_port
+      using_proxy? ? proxy[:proxy_port] : port
+    end
+
+    private
+
+    # @!attribute [r] host
+    #   @return [String]
+    def_delegator :@uri, :host
+
+    # @!attribute [r] port
+    #   @return [Fixnum]
+    def port
+      @uri.port || @uri.default_port
+    end
+
+    # @return [String] Default host (with port if needed) header value.
+    def default_host_header_value
+      PORTS[@scheme] != port ? "#{host}:#{port}" : host
+    end
+
+    # @return [HTTP::URI] URI with all componentes but query being normalized.
+    def normalize_uri(uri)
+      uri = HTTP::URI.parse uri
+
+      HTTP::URI.new(
+        :scheme     => uri.normalized_scheme,
+        :authority  => uri.normalized_authority,
+        :path       => uri.normalized_path,
+        :query      => uri.query,
+        :fragment   => uri.normalized_fragment
+      )
     end
   end
 end

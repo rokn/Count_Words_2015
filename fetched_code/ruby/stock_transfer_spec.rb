@@ -1,50 +1,75 @@
 require 'spec_helper'
 
-module Spree
-  describe StockTransfer, :type => :model do
-    let(:destination_location) { create(:stock_location_with_items) }
-    let(:source_location) { create(:stock_location_with_items) }
-    let(:stock_item) { source_location.stock_items.order(:id).first }
-    let(:variant) { stock_item.variant }
+describe 'Stock Transfers', type: :feature, js: true do
+  stub_authorization!
 
-    subject { StockTransfer.create(reference: 'PO123') }
+  it 'transfer between 2 locations' do
+    source_location = create(:stock_location_with_items, name: 'NY')
+    destination_location = create(:stock_location, name: 'SF')
+    variant = Spree::Variant.last
 
-    describe '#reference' do
-      subject { super().reference }
-      it { is_expected.to eq 'PO123' }
+    visit spree.admin_stock_transfers_path
+    click_on 'New Stock Transfer'
+    fill_in 'reference', with: 'PO 666'
+
+    select2_search variant.name, from: 'Variant'
+
+    click_button 'Add'
+    click_button 'Transfer Stock'
+
+    expect(page).to have_content('Reference PO 666')
+    expect(page).to have_content('NY')
+    expect(page).to have_content('SF')
+    expect(page).to have_content(variant.name)
+
+    transfer = Spree::StockTransfer.last
+    expect(transfer.stock_movements.size).to eq 2
+  end
+
+  describe 'received stock transfer' do
+    def it_is_received_stock_transfer(page)
+      expect(page).to have_content('Reference PO 666')
+      expect(page).not_to have_selector("#stock-location-source")
+      expect(page).to have_selector("#stock-location-destination")
+
+      transfer = Spree::StockTransfer.last
+      expect(transfer.stock_movements.size).to eq 1
+      expect(transfer.source_location).to be_nil
     end
 
-    describe '#to_param' do
-      subject { super().to_param }
-      it { is_expected.to match /T\d+/ }
+    it 'receive stock to a single location' do
+      source_location = create(:stock_location_with_items, name: 'NY')
+      destination_location = create(:stock_location, name: 'SF')
+      variant = Spree::Variant.last
+
+      visit spree.new_admin_stock_transfer_path
+
+      fill_in 'reference', with: 'PO 666'
+      check 'transfer_receive_stock'
+      select('NY', from: 'transfer_destination_location_id')
+      select2_search variant.name, from: 'Variant'
+
+      click_button 'Add'
+      click_button 'Transfer Stock'
+
+      it_is_received_stock_transfer page
     end
 
-    it 'transfers variants between 2 locations' do
-      variants = { variant => 5 }
+    it 'forced to only receive there is only one location' do
+      source_location = create(:stock_location_with_items, name: 'NY')
+      variant = Spree::Variant.last
 
-      subject.transfer(source_location,
-                       destination_location,
-                       variants)
+      visit spree.new_admin_stock_transfer_path
 
-      expect(source_location.count_on_hand(variant)).to eq 5
-      expect(destination_location.count_on_hand(variant)).to eq 5
+      fill_in 'reference', with: 'PO 666'
 
-      expect(subject.source_location).to eq source_location
-      expect(subject.destination_location).to eq destination_location
+      select('NY', from: 'transfer_destination_location_id')
+      select2_search variant.name, from: 'Variant'
 
-      expect(subject.source_movements.first.quantity).to eq -5
-      expect(subject.destination_movements.first.quantity).to eq 5
-    end
+      click_button 'Add'
+      click_button 'Transfer Stock'
 
-    it 'receive new inventory (from a vendor)' do
-      variants = { variant => 5 }
-
-      subject.receive(destination_location, variants)
-
-      expect(destination_location.count_on_hand(variant)).to eq 5
-
-      expect(subject.source_location).to be_nil
-      expect(subject.destination_location).to eq destination_location
+      it_is_received_stock_transfer page
     end
   end
 end

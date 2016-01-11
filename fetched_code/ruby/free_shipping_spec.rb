@@ -1,48 +1,36 @@
 require 'spec_helper'
 
-module Spree
-  module PromotionHandler
-    describe FreeShipping, type: :model do
-      let(:order) { create(:order) }
-      let(:shipment) { create(:shipment, order: order ) }
+describe Spree::Promotion::Actions::FreeShipping, :type => :model do
+  let(:order) { create(:completed_order_with_totals) }
+  let(:promotion) { create(:promotion) }
+  let(:action) { Spree::Promotion::Actions::FreeShipping.create }
+  let(:payload) { { order: order } }
 
-      let(:promotion) { Promotion.create(name: "Free Shipping") }
-      let(:calculator) { Calculator::FlatPercentItemTotal.new(preferred_flat_percent: 10) }
-      let!(:action) { Promotion::Actions::FreeShipping.create(promotion: promotion) }
+  it_behaves_like 'an adjustment source'
 
-      subject { Spree::PromotionHandler::FreeShipping.new(order) }
+  # From promotion spec:
+  context "#perform" do
+    before do
+      order.shipments << create(:shipment)
+      promotion.promotion_actions << action
+    end
 
-      context "activates in Shipment level" do
-        it "creates the adjustment" do
-          expect { subject.activate }.to change { shipment.adjustments.count }.by(1)
-        end
-      end
+    it "should create a discount with correct negative amount" do
+      expect(order.shipments.count).to eq(2)
+      expect(order.shipments.first.cost).to eq(100)
+      expect(order.shipments.last.cost).to eq(100)
+      expect(action.perform(payload)).to be true
+      expect(promotion.credits_count).to eq(2)
+      expect(order.shipment_adjustments.count).to eq(2)
+      expect(order.shipment_adjustments.first.amount.to_i).to eq(-100)
+      expect(order.shipment_adjustments.last.amount.to_i).to eq(-100)
+    end
 
-      context "if promo has a code" do
-        before do
-          promotion.update_column(:code, "code")
-        end
-
-        it "does adjust the shipment when applied to order" do
-          order.promotions << promotion
-
-          expect { subject.activate }.to change { shipment.adjustments.count }
-        end
-
-        it "does not adjust the shipment when not applied to order" do
-          expect { subject.activate }.to_not change { shipment.adjustments.count }
-        end
-      end
-
-      context "if promo has a path" do
-        before do
-          promotion.update_column(:path, "path")
-        end
-
-        it "does not adjust the shipment" do
-          expect { subject.activate }.to_not change { shipment.adjustments.count }
-        end
-      end
+    it "should not create a discount when order already has one from this promotion" do
+      expect(action.perform(payload)).to be true
+      expect(action.perform(payload)).to be false
+      expect(promotion.credits_count).to eq(2)
+      expect(order.shipment_adjustments.count).to eq(2)
     end
   end
 end

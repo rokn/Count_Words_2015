@@ -1,454 +1,869 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+require 'rails_helper'
+require_dependency 'post_destroyer'
 
-require 'spec_helper'
+describe Post do
+  before { Oneboxer.stubs :onebox }
 
-describe Post, :type => :model do
-  before do
-    @user = alice
-    @aspect = @user.aspects.create(:name => "winners")
+  # Help us build a post with a raw body
+  def post_with_body(body, user=nil)
+    args = post_args.merge(raw: body)
+    args[:user] = user if user.present?
+    Fabricate.build(:post, args)
+  end
+
+  it { is_expected.to validate_presence_of :raw }
+
+  # Min/max body lengths, respecting padding
+  it { is_expected.not_to allow_value("x").for(:raw) }
+  it { is_expected.not_to allow_value("x" * (SiteSetting.max_post_length + 1)).for(:raw) }
+  it { is_expected.not_to allow_value((" " * SiteSetting.min_post_length) + "x").for(:raw) }
+
+  it { is_expected.to rate_limit }
+
+  let(:topic) { Fabricate(:topic) }
+  let(:post_args) do
+    { user: topic.user, topic: topic }
   end
 
   describe 'scopes' do
-    describe '.owned_or_visible_by_user' do
+
+    describe '#by_newest' do
+      it 'returns posts ordered by created_at desc' do
+        2.times do |t|
+          Fabricate(:post, created_at: t.seconds.from_now)
+        end
+        expect(Post.by_newest.first.created_at).to be > Post.by_newest.last.created_at
+      end
+    end
+
+    describe '#with_user' do
+      it 'gives you a user' do
+        Fabricate(:post, user: Fabricate.build(:user))
+        expect(Post.with_user.first.user).to be_a User
+      end
+    end
+
+  end
+
+  describe "revisions and deleting/recovery" do
+
+    context 'a post without links' do
+      let(:post) { Fabricate(:post, post_args) }
+
       before do
-        @you = bob
-        @public_post = FactoryGirl.create(:status_message, :public => true)
-        @your_post = FactoryGirl.create(:status_message, :author => @you.person)
-        @post_from_contact = eve.post(:status_message, :text => 'wooo', :to => eve.aspects.where(:name => 'generic').first)
-        @post_from_stranger = FactoryGirl.create(:status_message, :public => false)
+        post.trash!
+        post.reload
       end
 
-      it 'returns post from your contacts' do
-        expect(StatusMessage.owned_or_visible_by_user(@you)).to include(@post_from_contact)
+      it "doesn't create a new revision when deleted" do
+        expect(post.revisions.count).to eq(0)
       end
 
-      it 'returns your posts' do
-        expect(StatusMessage.owned_or_visible_by_user(@you)).to include(@your_post)
-      end
+      describe "recovery" do
+        before do
+          post.recover!
+          post.reload
+        end
 
-      it 'returns public posts' do
-        expect(StatusMessage.owned_or_visible_by_user(@you)).to include(@public_post)
-      end
-
-      it 'returns public post from your contact' do
-        sm = FactoryGirl.create(:status_message, :author => eve.person, :public => true)
-
-        expect(StatusMessage.owned_or_visible_by_user(@you)).to include(sm)
-      end
-
-      it 'does not return non contacts, non-public post' do
-        expect(StatusMessage.owned_or_visible_by_user(@you)).not_to include(@post_from_stranger)
-      end
-
-      it 'should return the three visible posts' do
-        expect(StatusMessage.owned_or_visible_by_user(@you).count(:all)).to eq(3)
+        it "doesn't create a new revision when recovered" do
+          expect(post.revisions.count).to eq(0)
+        end
       end
     end
 
-
-    describe '.for_a_stream' do
-      it 'calls #for_visible_shareable_sql' do
-        time, order = double, double
-        expect(Post).to receive(:for_visible_shareable_sql).with(time, order).and_return(Post)
-        Post.for_a_stream(time, order)
-      end
-
-      it 'calls includes_for_a_stream' do
-        expect(Post).to receive(:includes_for_a_stream)
-        Post.for_a_stream(double, double)
-      end
-
-      it 'calls excluding_blocks if a user is present' do
-        expect(Post).to receive(:excluding_blocks).with(alice).and_return(Post)
-        Post.for_a_stream(double, double, alice)
-      end
-    end
-
-    describe '.excluding_blocks' do
+    context 'a post with links' do
+      let(:post) { Fabricate(:post_with_external_links) }
       before do
-        @post = FactoryGirl.create(:status_message, :author => alice.person)
-        @other_post = FactoryGirl.create(:status_message, :author => eve.person)
-
-        bob.blocks.create(:person => alice.person)
+        post.trash!
+        post.reload
       end
 
-      it 'does not included blocked users posts' do
-        expect(Post.excluding_blocks(bob)).not_to include(@post)
-      end
-
-      it 'includes not blocked users posts' do
-        expect(Post.excluding_blocks(bob)).to include(@other_post)
-      end
-
-      it 'returns posts if you dont have any blocks' do
-        expect(Post.excluding_blocks(alice).count).to eq(2)
+      describe 'recovery' do
+        it 'recreates the topic_link records' do
+          TopicLink.expects(:extract_from).with(post)
+          post.recover!
+        end
       end
     end
 
-    describe '.excluding_hidden_shareables' do
+  end
+
+  describe 'flagging helpers' do
+    it 'isFlagged is accurate' do
+      post = Fabricate(:post)
+      user = Fabricate(:coding_horror)
+      PostAction.act(user, post, PostActionType.types[:off_topic])
+
+      post.reload
+      expect(post.is_flagged?).to eq(true)
+
+      PostAction.remove_act(user, post, PostActionType.types[:off_topic])
+      post.reload
+      expect(post.is_flagged?).to eq(false)
+    end
+  end
+
+  describe "maximum images" do
+    let(:newuser) { Fabricate(:user, trust_level: TrustLevel[0]) }
+    let(:post_no_images) { Fabricate.build(:post, post_args.merge(user: newuser)) }
+    let(:post_one_image) { post_with_body("![sherlock](http://bbc.co.uk/sherlock.jpg)", newuser) }
+    let(:post_two_images) { post_with_body("<img src='http://discourse.org/logo.png'> <img src='http://bbc.co.uk/sherlock.jpg'>", newuser) }
+    let(:post_with_avatars) { post_with_body('<img alt="smiley" title=":smiley:" src="/assets/emoji/smiley.png" class="avatar"> <img alt="wink" title=":wink:" src="/assets/emoji/wink.png" class="avatar">', newuser) }
+    let(:post_with_favicon) { post_with_body('<img src="/assets/favicons/wikipedia.png" class="favicon">', newuser) }
+    let(:post_with_thumbnail) { post_with_body('<img src="/assets/emoji/smiley.png" class="thumbnail">', newuser) }
+    let(:post_with_two_classy_images) { post_with_body("<img src='http://discourse.org/logo.png' class='classy'> <img src='http://bbc.co.uk/sherlock.jpg' class='classy'>", newuser) }
+
+    it "returns 0 images for an empty post" do
+      expect(Fabricate.build(:post).image_count).to eq(0)
+    end
+
+    it "finds images from markdown" do
+      expect(post_one_image.image_count).to eq(1)
+    end
+
+    it "finds images from HTML" do
+      expect(post_two_images.image_count).to eq(2)
+    end
+
+    it "doesn't count avatars as images" do
+      expect(post_with_avatars.image_count).to eq(0)
+    end
+
+    it "doesn't count favicons as images" do
+      expect(post_with_favicon.image_count).to eq(0)
+    end
+
+    it "doesn't count thumbnails as images" do
+      expect(post_with_thumbnail.image_count).to eq(0)
+    end
+
+    it "doesn't count whitelisted images" do
+      Post.stubs(:white_listed_image_classes).returns(["classy"])
+      expect(post_with_two_classy_images.image_count).to eq(0)
+    end
+
+    context "validation" do
+
       before do
-        @post = FactoryGirl.create(:status_message, :author => alice.person)
-        @other_post = FactoryGirl.create(:status_message, :author => eve.person)
-        bob.toggle_hidden_shareable(@post)
+        SiteSetting.stubs(:newuser_max_images).returns(1)
       end
-      it 'excludes posts the user has hidden' do
-        expect(Post.excluding_hidden_shareables(bob)).not_to include(@post)
-      end
-      it 'includes posts the user has not hidden' do
-        expect(Post.excluding_hidden_shareables(bob)).to include(@other_post)
-      end
-    end
 
-    describe '.excluding_hidden_content' do
-      it 'calls excluding_blocks and excluding_hidden_shareables' do
-        expect(Post).to receive(:excluding_blocks).and_return(Post)
-        expect(Post).to receive(:excluding_hidden_shareables)
-        Post.excluding_hidden_content(bob)
-      end
-    end
+      context 'newuser' do
+        it "allows a new user to post below the limit" do
+          expect(post_one_image).to be_valid
+        end
 
-    context 'having some posts' do
-      before do
-        time_interval = 1000
-        time_past = 1000000
-        @posts = (1..5).map do |n|
-          aspect_to_post = alice.aspects.where(:name => "generic").first
-          post = alice.post :status_message, :text => "#{alice.username} - #{n}", :to => aspect_to_post.id
-          post.created_at = (post.created_at-time_past) - time_interval
-          post.updated_at = (post.updated_at-time_past) + time_interval
-          post.save
-          time_interval += 1000
-          post
+        it "doesn't allow more than the maximum" do
+          expect(post_two_images).not_to be_valid
+        end
+
+        it "doesn't allow a new user to edit their post to insert an image" do
+          post_no_images.user.trust_level = TrustLevel[0]
+          post_no_images.save
+          expect {
+            post_no_images.revise(post_no_images.user, { raw: post_two_images.raw })
+            post_no_images.reload
+          }.not_to change(post_no_images, :raw)
         end
       end
 
-      describe '.by_max_time' do
+      it "allows more images from a not-new account" do
+        post_two_images.user.trust_level = TrustLevel[1]
+        expect(post_two_images).to be_valid
+      end
 
-        it 'returns the posts ordered and limited by unix time' do
-          expect(Post.for_a_stream(Time.now + 1, "created_at")).to eq(@posts)
-          expect(Post.for_a_stream(Time.now + 1, "updated_at")).to eq(@posts.reverse)
+    end
+
+  end
+
+  describe "maximum attachments" do
+    let(:newuser) { Fabricate(:user, trust_level: TrustLevel[0]) }
+    let(:post_no_attachments) { Fabricate.build(:post, post_args.merge(user: newuser)) }
+    let(:post_one_attachment) { post_with_body('<a class="attachment" href="/uploads/default/1/2082985.txt">file.txt</a>', newuser) }
+    let(:post_two_attachments) { post_with_body('<a class="attachment" href="/uploads/default/2/20947092.log">errors.log</a> <a class="attachment" href="/uploads/default/3/283572385.3ds">model.3ds</a>', newuser) }
+
+    it "returns 0 attachments for an empty post" do
+      expect(Fabricate.build(:post).attachment_count).to eq(0)
+    end
+
+    it "finds attachments from HTML" do
+      expect(post_two_attachments.attachment_count).to eq(2)
+    end
+
+    context "validation" do
+
+      before do
+        SiteSetting.stubs(:newuser_max_attachments).returns(1)
+      end
+
+      context 'newuser' do
+        it "allows a new user to post below the limit" do
+          expect(post_one_attachment).to be_valid
+        end
+
+        it "doesn't allow more than the maximum" do
+          expect(post_two_attachments).not_to be_valid
+        end
+
+        it "doesn't allow a new user to edit their post to insert an attachment" do
+          post_no_attachments.user.trust_level = TrustLevel[0]
+          post_no_attachments.save
+          expect {
+            post_no_attachments.revise(post_no_attachments.user, { raw: post_two_attachments.raw })
+            post_no_attachments.reload
+          }.not_to change(post_no_attachments, :raw)
+        end
+      end
+
+      it "allows more attachments from a not-new account" do
+        post_two_attachments.user.trust_level = TrustLevel[1]
+        expect(post_two_attachments).to be_valid
+      end
+
+    end
+
+  end
+
+  context "links" do
+    let(:newuser) { Fabricate(:user, trust_level: TrustLevel[0]) }
+    let(:no_links) { post_with_body("hello world my name is evil trout", newuser) }
+    let(:one_link) { post_with_body("[jlawr](http://www.imdb.com/name/nm2225369)", newuser) }
+    let(:two_links) { post_with_body("<a href='http://disneyland.disney.go.com/'>disney</a> <a href='http://reddit.com'>reddit</a>", newuser)}
+    let(:three_links) { post_with_body("http://discourse.org and http://discourse.org/another_url and http://www.imdb.com/name/nm2225369", newuser)}
+
+    describe "raw_links" do
+      it "returns a blank collection for a post with no links" do
+        expect(no_links.raw_links).to be_blank
+      end
+
+      it "finds a link within markdown" do
+        expect(one_link.raw_links).to eq(["http://www.imdb.com/name/nm2225369"])
+      end
+
+      it "can find two links from html" do
+        expect(two_links.raw_links).to eq(["http://disneyland.disney.go.com/", "http://reddit.com"])
+      end
+
+      it "can find three links without markup" do
+        expect(three_links.raw_links).to eq(["http://discourse.org", "http://discourse.org/another_url", "http://www.imdb.com/name/nm2225369"])
+      end
+    end
+
+    describe "linked_hosts" do
+      it "returns blank with no links" do
+        expect(no_links.linked_hosts).to be_blank
+      end
+
+      it "returns the host and a count for links" do
+        expect(two_links.linked_hosts).to eq({"disneyland.disney.go.com" => 1, "reddit.com" => 1})
+      end
+
+      it "it counts properly with more than one link on the same host" do
+        expect(three_links.linked_hosts).to eq({"discourse.org" => 1, "www.imdb.com" => 1})
+      end
+    end
+
+    describe "total host usage" do
+
+      it "has none for a regular post" do
+        expect(no_links.total_hosts_usage).to be_blank
+      end
+
+      context "with a previous host" do
+
+        let(:user) { old_post.newuser }
+        let(:another_disney_link) { post_with_body("[radiator springs](http://disneyland.disney.go.com/disney-california-adventure/radiator-springs-racers/)", newuser) }
+
+        before do
+          another_disney_link.save
+          TopicLink.extract_from(another_disney_link)
+        end
+
+        it "contains the new post's links, PLUS the previous one" do
+          expect(two_links.total_hosts_usage).to eq({'disneyland.disney.go.com' => 2, 'reddit.com' => 1})
+        end
+
+      end
+
+    end
+
+
+  end
+
+
+  describe "maximum links" do
+    let(:newuser) { Fabricate(:user, trust_level: TrustLevel[0]) }
+    let(:post_one_link) { post_with_body("[sherlock](http://www.bbc.co.uk/programmes/b018ttws)", newuser) }
+    let(:post_two_links) { post_with_body("<a href='http://discourse.org'>discourse</a> <a href='http://twitter.com'>twitter</a>", newuser) }
+    let(:post_with_mentions) { post_with_body("hello @#{newuser.username} how are you doing?", newuser) }
+
+    it "returns 0 links for an empty post" do
+      expect(Fabricate.build(:post).link_count).to eq(0)
+    end
+
+    it "returns 0 links for a post with mentions" do
+      expect(post_with_mentions.link_count).to eq(0)
+    end
+
+    it "finds links from markdown" do
+      expect(post_one_link.link_count).to eq(1)
+    end
+
+    it "finds links from HTML" do
+      expect(post_two_links.link_count).to eq(2)
+    end
+
+    context "validation" do
+
+      before do
+        SiteSetting.stubs(:newuser_max_links).returns(1)
+      end
+
+      context 'newuser' do
+        it "returns true when within the amount of links allowed" do
+          expect(post_one_link).to be_valid
+        end
+
+        it "doesn't allow more links than allowed" do
+          expect(post_two_links).not_to be_valid
+        end
+      end
+
+      it "allows multiple images for basic accounts" do
+        post_two_links.user.trust_level = TrustLevel[1]
+        expect(post_two_links).to be_valid
+      end
+
+    end
+
+  end
+
+
+  describe "@mentions" do
+
+    context 'raw_mentions' do
+
+      it "returns an empty array with no matches" do
+        post = Fabricate.build(:post, post_args.merge(raw: "Hello Jake and Finn!"))
+        expect(post.raw_mentions).to eq([])
+      end
+
+      it "returns lowercase unique versions of the mentions" do
+        post = Fabricate.build(:post, post_args.merge(raw: "@Jake @Finn @Jake"))
+        expect(post.raw_mentions).to eq(['jake', 'finn'])
+      end
+
+      it "ignores pre" do
+        post = Fabricate.build(:post, post_args.merge(raw: "<pre>@Jake</pre> @Finn"))
+        expect(post.raw_mentions).to eq(['finn'])
+      end
+
+      it "catches content between pre tags" do
+        post = Fabricate.build(:post, post_args.merge(raw: "<pre>hello</pre> @Finn <pre></pre>"))
+        expect(post.raw_mentions).to eq(['finn'])
+      end
+
+      it "ignores code" do
+        post = Fabricate.build(:post, post_args.merge(raw: "@Jake `@Finn`"))
+        expect(post.raw_mentions).to eq(['jake'])
+      end
+
+      it "ignores quotes" do
+        post = Fabricate.build(:post, post_args.merge(raw: "[quote=\"Evil Trout\"]@Jake[/quote] @Finn"))
+        expect(post.raw_mentions).to eq(['finn'])
+      end
+
+      it "handles underscore in username" do
+        post = Fabricate.build(:post, post_args.merge(raw: "@Jake @Finn @Jake_Old"))
+        expect(post.raw_mentions).to eq(['jake', 'finn', 'jake_old'])
+      end
+
+    end
+
+    context "max mentions" do
+
+      let(:newuser) { Fabricate(:user, trust_level: TrustLevel[0]) }
+      let(:post_with_one_mention) { post_with_body("@Jake is the person I'm mentioning", newuser) }
+      let(:post_with_two_mentions) { post_with_body("@Jake @Finn are the people I'm mentioning", newuser) }
+
+      context 'new user' do
+        before do
+          SiteSetting.stubs(:newuser_max_mentions_per_post).returns(1)
+          SiteSetting.stubs(:max_mentions_per_post).returns(5)
+        end
+
+        it "allows a new user to have newuser_max_mentions_per_post mentions" do
+          expect(post_with_one_mention).to be_valid
+        end
+
+        it "doesn't allow a new user to have more than newuser_max_mentions_per_post mentions" do
+          expect(post_with_two_mentions).not_to be_valid
+        end
+      end
+
+      context "not a new user" do
+        before do
+          SiteSetting.stubs(:newuser_max_mentions_per_post).returns(0)
+          SiteSetting.stubs(:max_mentions_per_post).returns(1)
+        end
+
+        it "allows vmax_mentions_per_post mentions" do
+          post_with_one_mention.user.trust_level = TrustLevel[1]
+          expect(post_with_one_mention).to be_valid
+        end
+
+        it "doesn't allow to have more than max_mentions_per_post mentions" do
+          post_with_two_mentions.user.trust_level = TrustLevel[1]
+          expect(post_with_two_mentions).not_to be_valid
         end
       end
 
 
-      describe '.for_visible_shareable_sql' do
-        it 'calls max_time' do
-          time = Time.now + 1
-          expect(Post).to receive(:by_max_time).with(time, 'created_at').and_return(Post)
-          Post.for_visible_shareable_sql(time, 'created_at')
+    end
+
+  end
+
+  context 'validation' do
+    it 'validates our default post' do
+      expect(Fabricate.build(:post, post_args)).to be_valid
+    end
+
+    it 'treate blank posts as invalid' do
+      expect(Fabricate.build(:post, raw: "")).not_to be_valid
+    end
+  end
+
+  context "raw_hash" do
+
+    let(:raw) { "this is our test post body"}
+    let(:post) { post_with_body(raw) }
+
+    it "returns a value" do
+      expect(post.raw_hash).to be_present
+    end
+
+    it "returns blank for a nil body" do
+      post.raw = nil
+      expect(post.raw_hash).to be_blank
+    end
+
+    it "returns the same value for the same raw" do
+      expect(post.raw_hash).to eq(post_with_body(raw).raw_hash)
+    end
+
+    it "returns a different value for a different raw" do
+      expect(post.raw_hash).not_to eq(post_with_body("something else").raw_hash)
+    end
+
+    it "returns a different value with different text case" do
+      expect(post.raw_hash).not_to eq(post_with_body("THIS is OUR TEST post BODy").raw_hash)
+    end
+  end
+
+  context 'revise' do
+
+    let(:post) { Fabricate(:post, post_args) }
+    let(:first_version_at) { post.last_version_at }
+
+    it 'has no revision' do
+      expect(post.revisions.size).to eq(0)
+      expect(first_version_at).to be_present
+      expect(post.revise(post.user, { raw: post.raw })).to eq(false)
+    end
+
+    describe 'with the same body' do
+
+      it "doesn't change version" do
+        expect { post.revise(post.user, { raw: post.raw }); post.reload }.not_to change(post, :version)
+      end
+
+    end
+
+    describe 'ninja editing & edit windows' do
+
+      before { SiteSetting.stubs(:editing_grace_period).returns(1.minute.to_i) }
+
+      it 'works' do
+        revised_at = post.updated_at + 2.minutes
+        new_revised_at = revised_at + 2.minutes
+
+        # ninja edit
+        post.revise(post.user, { raw: 'updated body' }, revised_at: post.updated_at + 10.seconds)
+        post.reload
+        expect(post.version).to eq(1)
+        expect(post.public_version).to eq(1)
+        expect(post.revisions.size).to eq(0)
+        expect(post.last_version_at.to_i).to eq(first_version_at.to_i)
+
+        # revision much later
+        post.revise(post.user, { raw: 'another updated body' }, revised_at: revised_at)
+        post.reload
+        expect(post.version).to eq(2)
+        expect(post.public_version).to eq(2)
+        expect(post.revisions.size).to eq(1)
+        expect(post.last_version_at.to_i).to eq(revised_at.to_i)
+
+        # new edit window
+        post.revise(post.user, { raw: 'yet another updated body' }, revised_at: revised_at + 10.seconds)
+        post.reload
+        expect(post.version).to eq(2)
+        expect(post.public_version).to eq(2)
+        expect(post.revisions.size).to eq(1)
+        expect(post.last_version_at.to_i).to eq(revised_at.to_i)
+
+        # after second window
+        post.revise(post.user, { raw: 'yet another, another updated body' }, revised_at: new_revised_at)
+        post.reload
+        expect(post.version).to eq(3)
+        expect(post.public_version).to eq(3)
+        expect(post.revisions.size).to eq(2)
+        expect(post.last_version_at.to_i).to eq(new_revised_at.to_i)
+      end
+
+    end
+
+    describe 'rate limiter' do
+      let(:changed_by) { Fabricate(:coding_horror) }
+
+      it "triggers a rate limiter" do
+        EditRateLimiter.any_instance.expects(:performed!)
+        post.revise(changed_by, { raw: 'updated body' })
+      end
+    end
+
+    describe 'with a new body' do
+      let(:changed_by) { Fabricate(:coding_horror) }
+      let!(:result) { post.revise(changed_by, { raw: 'updated body' }) }
+
+      it 'acts correctly' do
+        expect(result).to eq(true)
+        expect(post.raw).to eq('updated body')
+        expect(post.invalidate_oneboxes).to eq(true)
+        expect(post.version).to eq(2)
+        expect(post.public_version).to eq(2)
+        expect(post.revisions.size).to eq(1)
+        expect(post.revisions.first.user).to be_present
+      end
+
+      context 'second poster posts again quickly' do
+
+        it 'is a ninja edit, because the second poster posted again quickly' do
+          SiteSetting.expects(:editing_grace_period).returns(1.minute.to_i)
+          post.revise(changed_by, { raw: 'yet another updated body' }, revised_at: post.updated_at + 10.seconds)
+          post.reload
+
+          expect(post.version).to eq(2)
+          expect(post.public_version).to eq(2)
+          expect(post.revisions.size).to eq(1)
         end
 
-        it 'defaults to 15 posts' do
-          chain = double.as_null_object
+      end
 
-          allow(Post).to receive(:by_max_time).and_return(chain)
-          expect(chain).to receive(:limit).with(15).and_return(Post)
-          Post.for_visible_shareable_sql(Time.now + 1, "created_at")
+    end
+
+  end
+
+
+  describe 'after save' do
+
+    let(:post) { Fabricate(:post, post_args) }
+
+    it "has correct info set" do
+      expect(post.user_deleted?).to eq(false)
+      expect(post.post_number).to be_present
+      expect(post.excerpt).to be_present
+      expect(post.post_type).to eq(Post.types[:regular])
+      expect(post.revisions).to be_blank
+      expect(post.cooked).to be_present
+      expect(post.external_id).to be_present
+      expect(post.quote_count).to eq(0)
+      expect(post.replies).to be_blank
+    end
+
+    describe 'extract_quoted_post_numbers' do
+
+      let!(:post) { Fabricate(:post, post_args) }
+      let(:reply) { Fabricate.build(:post, post_args) }
+
+      it "finds the quote when in the same topic" do
+        reply.raw = "[quote=\"EvilTrout, post:#{post.post_number}, topic:#{post.topic_id}\"]hello[/quote]"
+        reply.extract_quoted_post_numbers
+        expect(reply.quoted_post_numbers).to eq([post.post_number])
+      end
+
+      it "doesn't find the quote in a different topic" do
+        reply.raw = "[quote=\"EvilTrout, post:#{post.post_number}, topic:#{post.topic_id+1}\"]hello[/quote]"
+        reply.extract_quoted_post_numbers
+        expect(reply.quoted_post_numbers).to be_blank
+      end
+
+    end
+
+    describe 'a new reply' do
+
+      let(:topic) { Fabricate(:topic) }
+      let(:other_user) { Fabricate(:coding_horror) }
+      let(:reply_text) { "[quote=\"Evil Trout, post:1\"]\nhello\n[/quote]\nHmmm!"}
+      let!(:post) { PostCreator.new(topic.user, raw: Fabricate.build(:post).raw, topic_id: topic.id).create }
+      let!(:reply) { PostCreator.new(other_user, raw: reply_text, topic_id: topic.id, reply_to_post_number: post.post_number ).create }
+
+      it 'has a quote' do
+        expect(reply.quote_count).to eq(1)
+      end
+
+      it 'has a reply to the user of the original user' do
+        expect(reply.reply_to_user).to eq(post.user)
+      end
+
+      it 'increases the reply count of the parent' do
+        post.reload
+        expect(post.reply_count).to eq(1)
+      end
+
+      it 'increases the reply count of the topic' do
+        topic.reload
+        expect(topic.reply_count).to eq(1)
+      end
+
+      it 'is the child of the parent post' do
+        expect(post.replies).to eq([reply])
+      end
+
+
+      it "doesn't change the post count when you edit the reply" do
+        reply.raw = 'updated raw'
+        reply.save
+        post.reload
+        expect(post.reply_count).to eq(1)
+      end
+
+      context 'a multi-quote reply' do
+
+        let!(:multi_reply) do
+          raw = "[quote=\"Evil Trout, post:1\"]post1 quote[/quote]\nAha!\n[quote=\"Evil Trout, post:2\"]post2 quote[/quote]\nNeat-o"
+          PostCreator.new(other_user, raw: raw, topic_id: topic.id, reply_to_post_number: post.post_number).create
         end
 
+        it 'has the correct info set' do
+          expect(multi_reply.quote_count).to eq(2)
+          expect(post.replies.include?(multi_reply)).to eq(true)
+          expect(reply.replies.include?(multi_reply)).to eq(true)
+        end
+      end
+
+    end
+
+  end
+
+  context 'summary' do
+    let!(:p1) { Fabricate(:post, post_args.merge(score: 4, percent_rank: 0.33)) }
+    let!(:p2) { Fabricate(:post, post_args.merge(score: 10, percent_rank: 0.66)) }
+    let!(:p3) { Fabricate(:post, post_args.merge(score: 5, percent_rank: 0.99)) }
+
+    it "returns the OP and posts above the threshold in summary mode" do
+      SiteSetting.stubs(:summary_percent_filter).returns(66)
+      expect(Post.summary.order(:post_number)).to eq([p1, p2])
+    end
+
+  end
+
+
+  context 'sort_order' do
+    context 'regular topic' do
+
+      let!(:p1) { Fabricate(:post, post_args) }
+      let!(:p2) { Fabricate(:post, post_args) }
+      let!(:p3) { Fabricate(:post, post_args) }
+
+      it 'defaults to created order' do
+        expect(Post.regular_order).to eq([p1, p2, p3])
       end
     end
   end
 
-  describe 'validations' do
-    it 'validates uniqueness of guid and does not throw a db error' do
-      message = FactoryGirl.create(:status_message)
-      expect(FactoryGirl.build(:status_message, :guid => message.guid)).not_to be_valid
+  context "reply_history" do
+
+    let!(:p1) { Fabricate(:post, post_args) }
+    let!(:p2) { Fabricate(:post, post_args.merge(reply_to_post_number: p1.post_number)) }
+    let!(:p3) { Fabricate(:post, post_args) }
+    let!(:p4) { Fabricate(:post, post_args.merge(reply_to_post_number: p2.post_number)) }
+
+    it "returns the posts in reply to this post" do
+      expect(p4.reply_history).to eq([p1, p2])
+      expect(p4.reply_history(1)).to eq([p2])
+      expect(p3.reply_history).to be_blank
+      expect(p2.reply_history).to eq([p1])
+    end
+
+  end
+
+  describe 'urls' do
+    it 'no-ops for empty list' do
+      expect(Post.urls([])).to eq({})
+    end
+
+    # integration test -> should move to centralized integration test
+    it 'finds urls for posts presented' do
+      p1 = Fabricate(:post)
+      p2 = Fabricate(:post)
+      expect(Post.urls([p1.id, p2.id])).to eq({p1.id => p1.url, p2.id => p2.url})
     end
   end
 
-  describe 'post_type' do
-    it 'returns the class constant' do
-      status_message = FactoryGirl.create(:status_message)
-      expect(status_message.post_type).to eq("StatusMessage")
+  describe "details" do
+    it "adds details" do
+      post = Fabricate.build(:post)
+      post.add_detail("key", "value")
+      expect(post.post_details.size).to eq(1)
+      expect(post.post_details.first.key).to eq("key")
+      expect(post.post_details.first.value).to eq("value")
+    end
+
+    it "can find a post by a detail" do
+      detail = Fabricate(:post_detail)
+      post   = detail.post
+      expect(Post.find_by_detail(detail.key, detail.value).id).to eq(post.id)
     end
   end
 
-  describe 'deletion' do
-    it 'should delete a posts comments on delete' do
-      post = FactoryGirl.create(:status_message, :author => @user.person)
-      @user.comment!(post, "hey")
-      post.destroy
-      expect(Post.where(:id => post.id).empty?).to eq(true)
-      expect(Comment.where(:text => "hey").empty?).to eq(true)
+  describe "cooking" do
+    let(:post) { Fabricate.build(:post, post_args.merge(raw: "please read my blog http://blog.example.com")) }
+
+    it "should add nofollow to links in the post for trust levels below 3" do
+      post.user.trust_level = 2
+      post.save
+      expect(post.cooked).to match(/nofollow/)
+    end
+
+    it "when tl3_links_no_follow is false, should not add nofollow for trust level 3 and higher" do
+      SiteSetting.stubs(:tl3_links_no_follow).returns(false)
+      post.user.trust_level = 3
+      post.save
+      expect(post.cooked).not_to match(/nofollow/)
+    end
+
+    it "when tl3_links_no_follow is true, should add nofollow for trust level 3 and higher" do
+      SiteSetting.stubs(:tl3_links_no_follow).returns(true)
+      post.user.trust_level = 3
+      post.save
+      expect(post.cooked).to match(/nofollow/)
     end
   end
 
-  describe 'serialization' do
-    it 'should serialize the handle and not the sender' do
-      post = @user.post :status_message, :text => "hello", :to => @aspect.id
-      xml = post.to_diaspora_xml
+  describe "calculate_avg_time" do
 
-      expect(xml.include?("person_id")).to be false
-      expect(xml.include?(@user.person.diaspora_handle)).to be true
+    it "should not crash" do
+      Post.calculate_avg_time
+      Post.calculate_avg_time(1.day.ago)
     end
   end
 
-  describe '.diaspora_initialize' do
-    it 'takes provider_display_name' do
-      sm = FactoryGirl.create(:status_message, :provider_display_name => 'mobile')
-      expect(StatusMessage.diaspora_initialize(sm.attributes.merge(:author => bob.person)).provider_display_name).to eq('mobile')
+
+  describe "has_host_spam" do
+    it "correctly detects host spam" do
+      post = Fabricate(:post, raw: "hello from my site http://www.somesite.com http://#{GlobalSetting.hostname} http://#{RailsMultisite::ConnectionManagement.current_hostname}")
+
+      expect(post.total_hosts_usage).to eq({"www.somesite.com" => 1})
+      post.acting_user.trust_level = 0
+
+      expect(post.has_host_spam?).to eq(false)
+
+      SiteSetting.newuser_spam_host_threshold = 1
+
+      expect(post.has_host_spam?).to eq(true)
+
+      SiteSetting.white_listed_spam_host_domains = "bla.com|boo.com | somesite.com "
+      expect(post.has_host_spam?).to eq(false)
     end
   end
 
-  describe '#mutable?' do
-    it 'should be false by default' do
-      post = @user.post :status_message, :text => "hello", :to => @aspect.id
-      expect(post.mutable?).to eq(false)
+  it "has custom fields" do
+    post = Fabricate(:post)
+    expect(post.custom_fields["a"]).to eq(nil)
+
+    post.custom_fields["Tommy"] = "Hanks"
+    post.custom_fields["Vincent"] = "Vega"
+    post.save
+
+    post = Post.find(post.id)
+    expect(post.custom_fields).to eq({"Tommy" => "Hanks", "Vincent" => "Vega"})
+  end
+
+  describe "#rebake!" do
+    it "will rebake a post correctly" do
+      post = create_post
+      expect(post.baked_at).not_to eq(nil)
+      first_baked = post.baked_at
+      first_cooked = post.cooked
+
+      Post.exec_sql("UPDATE posts SET cooked = 'frogs' WHERE id = ?", post.id)
+      post.reload
+
+      post.expects(:publish_change_to_clients!).with(:rebaked)
+
+      result = post.rebake!
+
+      expect(post.baked_at).not_to eq(first_baked)
+      expect(post.cooked).to eq(first_cooked)
+      expect(result).to eq(true)
     end
   end
 
-  describe '#subscribers' do
-    it 'returns the people contained in the aspects the post appears in' do
-      post = @user.post :status_message, :text => "hello", :to => @aspect.id
+  describe ".rebake_old" do
+    it "will catch posts it needs to rebake" do
+      post = create_post
+      post.update_columns(baked_at: Time.new(2000,1,1), baked_version: -1)
+      Post.rebake_old(100)
 
-      expect(post.subscribers(@user)).to eq([])
-    end
+      post.reload
+      expect(post.baked_at).to be > 1.day.ago
 
-    it 'returns all a users contacts if the post is public' do
-      post = @user.post :status_message, :text => "hello", :to => @aspect.id, :public => true
-
-      expect(post.subscribers(@user).to_set).to eq(@user.contact_people.to_set)
-    end
-  end
-
-  describe 'Likeable#update_likes_counter' do
-    before do
-      @post = bob.post :status_message, :text => "hello", :to => 'all'
-      bob.like!(@post)
-    end
-    it 'does not update updated_at' do
-      old_time = Time.zone.now - 10000
-      Post.where(:id => @post.id).update_all(:updated_at => old_time)
-      expect(@post.reload.updated_at.to_i).to eq(old_time.to_i)
-      @post.update_likes_counter
-      expect(@post.reload.updated_at.to_i).to eq(old_time.to_i)
+      baked = post.baked_at
+      Post.rebake_old(100)
+      post.reload
+      expect(post.baked_at).to eq(baked)
     end
   end
 
-  describe "#receive" do
-    it "does not receive if the post does not verify" do
-      @post = FactoryGirl.create(:status_message, author: bob.person)
-      @known_post = FactoryGirl.create(:status_message, author: eve.person)
-      allow(@post).to receive(:persisted_shareable).and_return(@known_post)
-      expect(@post).not_to receive(:receive_persisted)
-      @post.receive(bob, eve.person)
-    end
+  describe ".unhide!" do
+    before { SiteSetting.stubs(:unique_posts_mins).returns(5) }
 
-    it "receives an update if the post is known" do
-      @post = FactoryGirl.create(:status_message, author: bob.person)
-      expect(@post).to receive(:receive_persisted)
-      @post.receive(bob, eve.person)
-    end
+    it "will unhide the first post & make the topic visible" do
+      hidden_topic = Fabricate(:topic, visible: false)
 
-    it "receives a new post if the post is unknown" do
-      @post = FactoryGirl.create(:status_message, author: bob.person)
-      allow(@post).to receive(:persisted_shareable).and_return(nil)
-      expect(@post).to receive(:receive_non_persisted)
-      @post.receive(bob, eve.person)
-    end
-  end
+      post = create_post(topic: hidden_topic)
+      post.update_columns(hidden: true, hidden_at: Time.now, hidden_reason_id: 1)
+      post.reload
 
-  describe "#receive_persisted" do
-    before do
-      @post = FactoryGirl.create(:status_message, author: bob.person)
-      @known_post = Post.new
-      allow(bob).to receive(:contact_for).with(eve.person).and_return(double(receive_shareable: true))
-    end
+      expect(post.hidden).to eq(true)
 
-    context "user knows about the post" do
-      before do
-        allow(bob).to receive(:find_visible_shareable_by_id).and_return(@known_post)
-      end
+      post.expects(:publish_change_to_clients!).with(:acted)
 
-      it "updates attributes only if mutable" do
-        allow(@known_post).to receive(:mutable?).and_return(true)
-        expect(@known_post).to receive(:update_attributes)
-        expect(@post.send(:receive_persisted, bob, eve.person, @known_post)).to eq(true)
-      end
+      post.unhide!
 
-      it "does not update attributes if trying to update a non-mutable object" do
-        allow(@known_post).to receive(:mutable?).and_return(false)
-        expect(@known_post).not_to receive(:update_attributes)
-        @post.send(:receive_persisted, bob, eve.person, @known_post)
-      end
-    end
+      post.reload
+      hidden_topic.reload
 
-    context "the user does not know about the post" do
-      before do
-        allow(bob).to receive(:find_visible_shareable_by_id).and_return(nil)
-        allow(bob).to receive(:notify_if_mentioned).and_return(true)
-      end
-
-      it "receives the post from the contact of the author" do
-        expect(@post.send(:receive_persisted, bob, eve.person, @known_post)).to eq(true)
-      end
-
-      it "notifies the user if they are mentioned" do
-        allow(bob).to receive(:contact_for).with(eve.person).and_return(double(receive_shareable: true))
-        expect(bob).to receive(:notify_if_mentioned).and_return(true)
-
-        expect(@post.send(:receive_persisted, bob, eve.person, @known_post)).to eq(true)
-      end
+      expect(post.hidden).to eq(false)
+      expect(hidden_topic.visible).to eq(true)
     end
   end
 
-  describe "#receive_non_persisted" do
-    context "the user does not know about the post" do
-      before do
-        @post = FactoryGirl.create(:status_message, author: bob.person)
-        allow(bob).to receive(:find_visible_shareable_by_id).and_return(nil)
-        allow(bob).to receive(:notify_if_mentioned).and_return(true)
-      end
+  it "will unhide the post but will keep the topic invisible/unlisted" do
+    hidden_topic = Fabricate(:topic, visible: false)
+    first_post = create_post(topic: hidden_topic)
+    second_post = create_post(topic: hidden_topic)
 
-      it "it receives the post from the contact of the author" do
-        expect(bob).to receive(:contact_for).with(eve.person).and_return(double(receive_shareable: true))
-        expect(@post.send(:receive_non_persisted, bob, eve.person)).to eq(true)
-      end
+    second_post.update_columns(hidden: true, hidden_at: Time.now, hidden_reason_id: 1)
+    second_post.expects(:publish_change_to_clients!).with(:acted)
 
-      it "notifies the user if they are mentioned" do
-        allow(bob).to receive(:contact_for).with(eve.person).and_return(double(receive_shareable: true))
-        expect(bob).to receive(:notify_if_mentioned).and_return(true)
+    second_post.unhide!
 
-        expect(@post.send(:receive_non_persisted, bob, eve.person)).to eq(true)
-      end
+    second_post.reload
+    hidden_topic.reload
 
-      it "does not create shareable visibility if the post does not save" do
-        allow(@post).to receive(:save).and_return(false)
-        expect(@post).not_to receive(:receive_shareable_visibility)
-        @post.send(:receive_non_persisted, bob, eve.person)
-      end
-
-      it "retries if saving fails with RecordNotUnique error" do
-        allow(@post).to receive(:save).and_raise(ActiveRecord::RecordNotUnique.new("Duplicate entry ..."))
-        expect(bob).to receive(:contact_for).with(eve.person).and_return(double(receive_shareable: true))
-        expect(@post.send(:receive_non_persisted, bob, eve.person)).to eq(true)
-      end
-
-      it "retries if saving fails with RecordNotUnique error and raise again if no persisted shareable found" do
-        allow(@post).to receive(:save).and_raise(ActiveRecord::RecordNotUnique.new("Duplicate entry ..."))
-        allow(@post).to receive(:persisted_shareable).and_return(nil)
-        expect(bob).not_to receive(:contact_for).with(eve.person)
-        expect { @post.send(:receive_non_persisted, bob, eve.person) }.to raise_error(ActiveRecord::RecordNotUnique)
-      end
-    end
+    expect(second_post.hidden).to eq(false)
+    expect(hidden_topic.visible).to eq(false)
   end
 
-  describe "#receive_public" do
-    it "saves the post if the post is unknown" do
-      @post = FactoryGirl.create(:status_message, author: bob.person)
-      allow(@post).to receive(:persisted_shareable).and_return(nil)
-      expect(@post).to receive(:save!)
-      @post.receive_public
-    end
-
-    it "does not update the post because not mutable" do
-      @post = FactoryGirl.create(:status_message, author: bob.person)
-      expect(@post).to receive(:update_existing_sharable).and_call_original
-      expect(@post).not_to receive(:update_attributes)
-      @post.receive_public
-    end
-  end
-
-  describe '#reshares_count' do
-    before :each do
-      @post = @user.post :status_message, :text => "hello", :to => @aspect.id, :public => true
-      expect(@post.reshares.size).to eq(0)
-    end
-
-    describe 'when post has not been reshared' do
-      it 'returns zero' do
-        expect(@post.reshares_count).to eq(0)
-      end
-    end
-
-    describe 'when post has been reshared exactly 1 time' do
-      before :each do
-        expect(@post.reshares.size).to eq(0)
-        @reshare = FactoryGirl.create(:reshare, :root => @post)
-        @post.reload
-        expect(@post.reshares.size).to eq(1)
-      end
-
-      it 'returns 1' do
-        expect(@post.reshares_count).to eq(1)
-      end
-    end
-
-    describe 'when post has been reshared more than once' do
-      before :each do
-        expect(@post.reshares.size).to eq(0)
-        FactoryGirl.create(:reshare, :root => @post)
-        FactoryGirl.create(:reshare, :root => @post)
-        FactoryGirl.create(:reshare, :root => @post)
-        @post.reload
-        expect(@post.reshares.size).to eq(3)
-      end
-
-      it 'returns the number of reshares' do
-        expect(@post.reshares_count).to eq(3)
-      end
-    end
-  end
-
-  describe "#after_create" do
-    it "sets #interacted_at" do
-      post = FactoryGirl.create(:status_message)
-      expect(post.interacted_at).not_to be_blank
-    end
-  end
-
-  describe "#find_public" do
-    it "succeeds with an id" do
-      post = FactoryGirl.create :status_message, public: true
-      expect(Post.find_public post.id).to eq(post)
-    end
-
-    it "succeeds with an guid" do
-      post = FactoryGirl.create :status_message, public: true
-      expect(Post.find_public post.guid).to eq(post)
-    end
-
-    it "raises ActiveRecord::RecordNotFound for a non-existing id without a user" do
-      allow(Post).to receive_messages where: double(includes: double(first: nil))
-      expect {
-        Post.find_public 123
-      }.to raise_error ActiveRecord::RecordNotFound
-    end
-
-    it "raises Diaspora::NonPublic for a private post without a user" do
-      post = FactoryGirl.create :status_message
-      expect {
-        Post.find_public post.id
-      }.to raise_error Diaspora::NonPublic
-    end
-  end
-
-  describe "#find_non_public_by_guid_or_id_with_user" do
-    it "succeeds with an id" do
-      post = FactoryGirl.create :status_message_in_aspect
-      expect(Post.find_non_public_by_guid_or_id_with_user(post.id, post.author.owner)).to eq(post)
-    end
-
-    it "succeeds with an guid" do
-      post = FactoryGirl.create :status_message_in_aspect
-      expect(Post.find_non_public_by_guid_or_id_with_user(post.guid, post.author.owner)).to eq(post)
-    end
-
-    it "looks up on the passed user object if it's non-nil" do
-      post = FactoryGirl.create :status_message
-      user = double
-      expect(user).to receive(:find_visible_shareable_by_id).with(Post, post.id, key: :id).and_return(post)
-      Post.find_non_public_by_guid_or_id_with_user(post.id, user)
-    end
-
-    it "raises ActiveRecord::RecordNotFound with a non-existing id and a user" do
-      user = double(find_visible_shareable_by_id: nil)
-      expect {
-        Post.find_non_public_by_guid_or_id_with_user(123, user)
-      }.to raise_error ActiveRecord::RecordNotFound
-    end
-  end
 end

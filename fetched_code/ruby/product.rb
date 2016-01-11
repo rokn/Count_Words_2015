@@ -1,61 +1,64 @@
+# A rule to limit a promotion based on products in the order.
+# Can require all or any of the products to be present.
+# Valid products either come from assigned product group or are assingned directly to the rule.
 module Spree
-  module Core
-    module Importer
-      class Product
-        attr_reader :product, :product_attrs, :variants_attrs, :options_attrs
+  class Promotion
+    module Rules
+      class Product < PromotionRule
+        has_many :product_promotion_rules, class_name: 'Spree::ProductPromotionRule',
+                                           foreign_key: :promotion_rule_id
+        has_many :products, through: :product_promotion_rules, class_name: 'Spree::Product'
 
-        def initialize(product, product_params, options = {})
-          @product = product || Spree::Product.new(product_params)
+        MATCH_POLICIES = %w(any all none)
+        preference :match_policy, :string, default: MATCH_POLICIES.first
 
-          @product_attrs = product_params
-          @variants_attrs = options[:variants_attrs] || []
-          @options_attrs = options[:options_attrs] || []
+        # scope/association that is used to test eligibility
+        def eligible_products
+          products
         end
 
-        def create
-          if product.save
-            variants_attrs.each do |variant_attribute|
-              # make sure the product is assigned before the options=
-              product.variants.create({ product: product }.merge(variant_attribute))
-            end
-
-            set_up_options
-          end
-
-          product
+        def applicable?(promotable)
+          promotable.is_a?(Spree::Order)
         end
 
-        def update
-          if product.update_attributes(product_attrs)
-            variants_attrs.each do |variant_attribute|
-              # update the variant if the id is present in the payload
-              if variant_attribute['id'].present?
-                product.variants.find(variant_attribute['id'].to_i).update_attributes(variant_attribute)
-              else
-                # make sure the product is assigned before the options=
-                product.variants.create({ product: product }.merge(variant_attribute))
-              end
-            end
+        def eligible?(order, options = {})
+          return true if eligible_products.empty?
 
-            set_up_options
+          if preferred_match_policy == 'all'
+            unless eligible_products.all? {|p| order.products.include?(p) }
+              eligibility_errors.add(:base, eligibility_error_message(:missing_product))
+            end
+          elsif preferred_match_policy == 'any'
+            unless order.products.any? {|p| eligible_products.include?(p) }
+              eligibility_errors.add(:base, eligibility_error_message(:no_applicable_products))
+            end
+          else
+            unless order.products.none? {|p| eligible_products.include?(p) }
+              eligibility_errors.add(:base, eligibility_error_message(:has_excluded_product))
+            end
           end
 
-          product
+          eligibility_errors.empty?
         end
 
-        private
-          def set_up_options
-            options_attrs.each do |name|
-              option_type = Spree::OptionType.where(name: name).first_or_initialize do |option_type|
-                option_type.presentation = name
-                option_type.save!
-              end
-
-              unless product.option_types.include?(option_type)
-                product.option_types << option_type
-              end
-            end
+        def actionable?(line_item)
+          case preferred_match_policy
+          when 'any', 'all'
+            product_ids.include? line_item.variant.product_id
+          when 'none'
+            product_ids.exclude? line_item.variant.product_id
+          else
+            raise "unexpected match policy: #{preferred_match_policy.inspect}"
           end
+        end
+
+        def product_ids_string
+          product_ids.join(',')
+        end
+
+        def product_ids_string=(s)
+          self.product_ids = s.to_s.split(',').map(&:strip)
+        end
       end
     end
   end

@@ -1,19 +1,12 @@
-class Notifications::Liked < Notification
-  def mail_job
-    Workers::Mail::Liked
-  end
-  
-  def popup_translation_key
-    'notifications.liked'
-  end
+module NotificationMailers
+  class Liked < NotificationMailers::Base
+    attr_accessor :like
+    delegate :target, to: :like, prefix: true
 
-  def deleted_translation_key
-    'notifications.liked_post_deleted'
-  end
-  
-  def linked_object
-    post = self.target
-    post = post.target if post.is_a? Like
-    post
+    def set_headers(like_id)
+      @like = Like.find(like_id)
+
+      @headers[:subject] = I18n.t('notifier.liked.liked', :name => @sender.name)
+    end
   end
 end

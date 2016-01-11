@@ -1,18 +1,24 @@
-require "rails_helper"
+require 'spec_helper'
+require 'email_spec'
 
-describe TestMailer do
+describe Spree::TestMailer, :type => :mailer do
+  include EmailSpec::Helpers
+  include EmailSpec::Matchers
 
-  describe "send_test" do
+  before { create(:store) }
 
-    it "works" do
-      test_mailer = TestMailer.send_test('marcheline@adventuretime.ooo')
+  let(:user) { create(:user) }
 
-      expect(test_mailer.from).to eq([SiteSetting.notification_email])
-      expect(test_mailer.to).to eq(['marcheline@adventuretime.ooo'])
-      expect(test_mailer.subject).to be_present
-      expect(test_mailer.body).to be_present
+  context ":from not set explicitly" do
+    it "falls back to spree config" do
+      message = Spree::TestMailer.test_email('test@example.com')
+      expect(message.from).to eq([Spree::Store.current.mail_from_address])
     end
-
   end
 
+  it "confirm_email accepts a user id as an alternative to a User object" do
+    expect {
+      test_email = Spree::TestMailer.test_email('test@example.com')
+    }.not_to raise_error
+  end
 end

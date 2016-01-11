@@ -1,51 +1,98 @@
-module Spree
-  module Core
-    module ControllerHelpers
-      module Store
-        extend ActiveSupport::Concern
+# Use singleton class Spree::Preferences::Store.instance to access
+#
+# StoreInstance has a persistence flag that is on by default,
+# but we disable database persistence in testing to speed up tests
+#
 
-        included do
-          helper_method :current_currency
-          helper_method :current_store
-          helper_method :current_price_options
+require 'singleton'
+
+module Spree::Preferences
+
+  class StoreInstance
+    attr_accessor :persistence
+
+    def initialize
+      @cache = Rails.cache
+      @persistence = true
+    end
+
+    def set(key, value)
+      @cache.write(key, value)
+      persist(key, value)
+    end
+    alias_method :[]=, :set
+
+    def exist?(key)
+      @cache.exist?(key) ||
+      should_persist? && Spree::Preference.where(:key => key).exists?
+    end
+
+    def get(key)
+      # return the retrieved value, if it's in the cache
+      # use unless nil? incase the value is actually boolean false
+      #
+      unless (val = @cache.read(key)).nil?
+        return val
+      end
+
+      if should_persist?
+        # If it's not in the cache, maybe it's in the database, but
+        # has been cleared from the cache
+
+        # does it exist in the database?
+        if preference = Spree::Preference.find_by_key(key)
+          # it does exist
+          val = preference.value
+        else
+          # use the fallback value
+          val = yield
         end
 
-        def current_currency
-          Spree::Config[:currency]
-        end
+        # Cache either the value from the db or the fallback value.
+        # This avoids hitting the db with subsequent queries.
+        @cache.write(key, val)
 
-        def current_store
-          @current_store ||= Spree::Store.current(request.env['SERVER_NAME'])
-        end
-
-        # Return a Hash of things that influence the prices displayed in your shop.
-        #
-        # By default, the only thing that influences prices that is the current order's +tax_zone+
-        # (to facilitate differing prices depending on VAT rate for digital products in Europe, see
-        # https://github.com/spree/spree/pull/6295 and https://github.com/spree/spree/pull/6662).
-        #
-        # If your prices depend on something else, overwrite this method and add
-        # more key/value pairs to the Hash it returns.
-        #
-        # Be careful though to also patch the following parts of Spree accordingly:
-        #
-        # * `Spree::VatPriceCalculation#gross_amount`
-        # * `Spree::LineItem#update_price`
-        # * `Spree::Stock::Estimator#taxation_options_for`
-        # * Subclass the `DefaultTax` calculator
-        #
-        def current_price_options
-          {
-            tax_zone: current_tax_zone
-          }
-        end
-
-        private
-
-        def current_tax_zone
-          current_order.try(:tax_zone) || Spree::Zone.default_tax
-        end
+        return val
+      else
+        yield
       end
     end
+    alias_method :fetch, :get
+
+    def delete(key)
+      @cache.delete(key)
+      destroy(key)
+    end
+
+    def clear_cache
+      @cache.clear
+    end
+
+    private
+
+    def persist(cache_key, value)
+      return unless should_persist?
+
+      preference = Spree::Preference.where(:key => cache_key).first_or_initialize
+      preference.value = value
+      preference.save
+    end
+
+    def destroy(cache_key)
+      return unless should_persist?
+
+      preference = Spree::Preference.find_by_key(cache_key)
+      preference.destroy if preference
+    end
+
+    def should_persist?
+      @persistence and Spree::Preference.table_exists?
+    end
+
   end
+
+  class Store < StoreInstance
+    include Singleton
+  end
+
 end

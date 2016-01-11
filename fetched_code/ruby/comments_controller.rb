@@ -1,73 +1,93 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
-
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
 class CommentsController < ApplicationController
-  before_action :authenticate_user!, except: :index
+  before_action :require_user
 
-  respond_to :html, :mobile, :json
-
-  rescue_from ActiveRecord::RecordNotFound do
-    render nothing: true, status: 404
-  end
-
-  def create
-    @comment = CommentService.new(post_id: params[:post_id], text: params[:text], user: current_user).create_comment
-    if @comment
-      respond_create_success
-    else
-      render nothing: true, status: 404
-    end
-  end
-
-  def destroy
-    service = CommentService.new(comment_id: params[:id], user: current_user)
-    if service.destroy_comment
-      respond_destroy_success
-    else
-      respond_destroy_error
-    end
-  end
-
-  def new
-    respond_to do |format|
-      format.mobile { render layout: false }
-    end
-  end
-
+  # GET /comments
+  # GET /comments.json
+  # GET /comments.xml
+  #----------------------------------------------------------------------------
   def index
-    service = CommentService.new(post_id: params[:post_id], user: current_user)
-    @post = service.post
-    @comments = service.comments
-    respond_with do |format|
-      format.json  { render json: CommentPresenter.as_collection(@comments), status: 200 }
-      format.mobile { render layout: false }
+    @commentable = extract_commentable_name(params)
+    if @commentable
+      @asset = @commentable.classify.constantize.my.find(params[:"#{@commentable}_id"])
+      @comments = @asset.comments.order("created_at DESC")
     end
+    respond_with(@comments) do |format|
+      format.html { redirect_to @asset }
+    end
+
+  rescue ActiveRecord::RecordNotFound # Kicks in if @asset was not found.
+    flash[:warning] = t(:msg_assets_not_available, "notes")
+    respond_to do |format|
+      format.html { redirect_to root_url }
+      format.json { render text: flash[:warning], status: :not_found }
+      format.xml  { render text: flash[:warning], status: :not_found }
+    end
+  end
+
+  # GET /comments/1/edit                                                   AJAX
+  #----------------------------------------------------------------------------
+  def edit
+    @comment = Comment.find(params[:id])
+
+    model, id = @comment.commentable_type, @comment.commentable_id
+    unless model.constantize.my.find_by_id(id)
+      respond_to_related_not_found(model.downcase)
+    end
+  end
+
+  # POST /comments
+  # POST /comments.json
+  # POST /comments.xml                                                     AJAX
+  #----------------------------------------------------------------------------
+  def create
+    @comment = Comment.new(
+      comment_params.merge(user_id: current_user.id)
+    )
+    # Make sure commentable object exists and is accessible to the current user.
+    model, id = @comment.commentable_type, @comment.commentable_id
+    unless model.constantize.my.find_by_id(id)
+      respond_to_related_not_found(model.downcase)
+    else
+      @comment.save
+      respond_with(@comment)
+    end
+  end
+
+  # PUT /comments/1
+  # PUT /comments/1.json
+  # PUT /comments/1.xml                                          not implemened
+  #----------------------------------------------------------------------------
+  def update
+    @comment = Comment.find(params[:id])
+    @comment.update_attributes(comment_params)
+    respond_with(@comment)
+  end
+
+  # DELETE /comments/1
+  # DELETE /comments/1.json
+  # DELETE /comments/1.xml                                      not implemented
+  #----------------------------------------------------------------------------
+  def destroy
+    @comment = Comment.find(params[:id])
+    @comment.destroy
+    respond_with(@comment)
+  end
+
+  protected
+
+  def comment_params
+    params[:comment].permit!
   end
 
   private
 
-  def respond_create_success
-    respond_to do |format|
-      format.json { render json: CommentPresenter.new(@comment), status: 201 }
-      format.html { render nothing: true, status: 201 }
-      format.mobile { render partial: "comment", locals: {post: @comment.post, comment: @comment} }
-    end
-  end
-
-  def respond_destroy_success
-    respond_to do |format|
-      format.mobile { redirect_to :back }
-      format.js { render nothing: true, status: 204 }
-      format.json { render nothing: true, status: 204 }
-    end
-  end
-
-  def respond_destroy_error
-    respond_to do |format|
-      format.mobile { redirect_to :back }
-      format.js { render nothing: true, status: 403 }
-      format.json { render nothing: true, status: 403 }
-    end
+  #----------------------------------------------------------------------------
+  def extract_commentable_name(params)
+    params.keys.detect { |x| x =~ /_id$/ }.try(:sub, /_id$/, '')
   end
 end

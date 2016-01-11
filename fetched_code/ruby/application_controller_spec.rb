@@ -1,127 +1,177 @@
-#   Copyright (c) 2010-2012, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+require 'rails_helper'
 
-require 'spec_helper'
+describe TopicsController do
+  before do
+    TopicUser.stubs(:track_visit!)
+  end
 
-describe ApplicationController, :type => :controller do
-  controller do
-    def index
-      head :ok
+  let :topic do
+    Fabricate(:post).topic
+  end
+
+  def set_referer(ref)
+    request.env['HTTP_REFERER'] = ref
+  end
+
+  it "doesn't store an incoming link when there's no referer" do
+    expect {
+      get :show, id: topic.id
+    }.not_to change(IncomingLink, :count)
+  end
+
+  it "doesn't raise an error on a very long link" do
+    set_referer("http://#{'a' * 2000}.com")
+    expect { get :show, {id: topic.id} }.not_to raise_error
+  end
+
+  describe "has_escaped_fragment?" do
+    render_views
+
+    context "when the SiteSetting is disabled" do
+      before do
+        SiteSetting.stubs(:enable_escaped_fragments?).returns(false)
+      end
+
+      it "uses the application layout even with an escaped fragment param" do
+        get :show, {'topic_id' => topic.id, 'slug' => topic.slug,  '_escaped_fragment_' => 'true'}
+        expect(response).to render_template(layout: 'application')
+        assert_select "meta[name=fragment]", false, "it doesn't have the meta tag"
+      end
+    end
+
+    context "when the SiteSetting is enabled" do
+      before do
+        SiteSetting.stubs(:enable_escaped_fragments?).returns(true)
+      end
+
+      it "uses the application layout when there's no param" do
+        get :show, topic_id: topic.id, slug: topic.slug
+        expect(response).to render_template(layout: 'application')
+        assert_select "meta[name=fragment]", true, "it has the meta tag"
+      end
+
+      it "uses the crawler layout when there's an _escaped_fragment_ param" do
+        get :show, topic_id: topic.id, slug: topic.slug,  _escaped_fragment_: 'true'
+        expect(response).to render_template(layout: 'crawler')
+        assert_select "meta[name=fragment]", false, "it doesn't have the meta tag"
+      end
     end
   end
+
+  describe "crawler" do
+    render_views
+
+    context "when not a crawler" do
+      before do
+        CrawlerDetection.expects(:crawler?).returns(false)
+      end
+      it "renders with the application layout" do
+        get :show, topic_id: topic.id, slug: topic.slug
+        expect(response).to render_template(layout: 'application')
+        assert_select "meta[name=fragment]", true, "it has the meta tag"
+      end
+    end
+
+    context "when a crawler" do
+      before do
+        CrawlerDetection.expects(:crawler?).returns(true)
+      end
+      it "renders with the crawler layout" do
+        get :show, topic_id: topic.id, slug: topic.slug
+        expect(response).to render_template(layout: 'crawler')
+        assert_select "meta[name=fragment]", false, "it doesn't have the meta tag"
+      end
+    end
+
+  end
+
+  describe 'set_locale' do
+    it 'sets the one the user prefers' do
+      SiteSetting.stubs(:allow_user_locale).returns(true)
+
+      user = Fabricate(:user, locale: :fr)
+      log_in_user(user)
+
+      get :show, {topic_id: topic.id}
+
+      expect(I18n.locale).to eq(:fr)
+    end
+
+    it 'is sets the default locale when the setting not enabled' do
+      user = Fabricate(:user, locale: :fr)
+      log_in_user(user)
+
+      get :show, {topic_id: topic.id}
+
+      expect(I18n.locale).to eq(:en)
+    end
+  end
+
+  describe "read only header" do
+    it "returns no read only header by default" do
+      get :show, {topic_id: topic.id}
+      expect(response.headers['Discourse-Readonly']).to eq(nil)
+    end
+
+    it "returns a readonly header if the site is read only" do
+      Discourse.received_readonly!
+      get :show, {topic_id: topic.id}
+      expect(response.headers['Discourse-Readonly']).to eq('true')
+    end
+  end
+end
+
+describe 'api' do
 
   before do
-    sign_in alice
+    ActionController::Base.allow_forgery_protection = true
   end
 
-  describe '#set_diaspora_headers' do
-    it 'sets the version header' do
-      get :index
-      expect(response.headers['X-Diaspora-Version']).to include AppConfig.version.number.get
-    end
-
-    context 'with git info' do
-      before do
-        allow(AppConfig).to receive(:git_available?).and_return(true)
-        allow(AppConfig).to receive(:git_update).and_return('yesterday')
-        allow(AppConfig).to receive(:git_revision).and_return('02395')
-      end
-
-      it 'sets the git header' do
-        get :index
-        expect(response.headers['X-Git-Update']).to eq('yesterday')
-        expect(response.headers['X-Git-Revision']).to eq('02395')
-      end
-    end
+  after do
+    ActionController::Base.allow_forgery_protection = false
   end
 
-  describe '#mobile_switch' do
-    it 'sets the format to :mobile' do
-      request.format = :html
-      session[:mobile_view] = true
-      get :index
-      expect(request.format.mobile?).to be true
+  describe PostsController do
+    let(:user) do
+      Fabricate(:user)
     end
 
-    it 'uses :html for :tablets' do
-      request.format = :tablet
-      session[:tablet_view] = true
-      get :index
-      expect(request.format.html?).to be true
+    let(:post) do
+      Fabricate(:post)
     end
 
-    it "doesn't mess up other formats, like json" do
-      get :index, :format => 'json'
-      expect(request.format.json?).to be true
+    let(:api_key) { user.generate_api_key(user) }
+    let(:master_key) { ApiKey.create_master_key }
+
+    # choosing an arbitrarily easy to mock trusted activity
+    it 'allows users with api key to bookmark posts' do
+      PostAction.expects(:act).with(user, post, PostActionType.types[:bookmark]).once
+      put :bookmark, bookmarked: "true", post_id: post.id, api_key: api_key.key, format: :json
+      expect(response).to be_success
     end
 
-    it "doesn't mess up other formats, like xml, even with :mobile session" do
-      session[:mobile_view] = true
-      get :index, :format => 'xml'
-      expect(request.format.xml?).to be true
-    end
-  end
-
-  describe '#tags' do
-    before do
-      @tag = ActsAsTaggableOn::Tag.create!(:name => "partytimeexcellent")
-      TagFollowing.create!(:tag => @tag, :user => alice)
+    it 'raises an error with a user key that does not match an optionally specified username' do
+      PostAction.expects(:act).with(user, post, PostActionType.types[:bookmark]).never
+      put :bookmark, bookmarked: "true", post_id: post.id, api_key: api_key.key, api_username: 'made_up', format: :json
+      expect(response).not_to be_success
     end
 
-    it 'queries current_users tag if there are tag_followings' do
-      expect(@controller.send(:tags)).to eq([@tag])
+    it 'allows users with a master api key to bookmark posts' do
+      PostAction.expects(:act).with(user, post, PostActionType.types[:bookmark]).once
+      put :bookmark, bookmarked: "true", post_id: post.id, api_key: master_key.key, api_username: user.username, format: :json
+      expect(response).to be_success
     end
 
-    it 'does not query twice' do
-      expect_any_instance_of(User).to receive(:followed_tags).once.and_return([@tag])
-      @controller.send(:tags)
-      @controller.send(:tags)
-    end
-  end
-
-  describe "#after_sign_in_path_for" do
-    context 'getting started true on user' do
-      before do
-        alice.update_attribute(:getting_started, true)
-      end
-
-      it "redirects to getting started if the user has getting started set to true and a blank profile" do
-        expect(@controller.send(:after_sign_in_path_for, alice)).to eq(getting_started_path)
-      end
+    it 'disallows phonies to bookmark posts' do
+      PostAction.expects(:act).with(user, post, PostActionType.types[:bookmark]).never
+      put :bookmark, bookmarked: "true", post_id: post.id, api_key: SecureRandom.hex(32), api_username: user.username, format: :json
+      expect(response.code.to_i).to eq(403)
     end
 
-    context "getting started true and one tag present on user" do
-      before do
-        alice.update_attribute(:getting_started, true)
-        @tag = ActsAsTaggableOn::Tag.create!(name: "partytimeexcellent")
-        allow(@controller).to receive(:current_user).and_return(alice)
-        TagFollowing.create!(tag: @tag, user: alice)
-      end
-
-      it "redirects to stream if the user has getting started set to true and has already added tags" do
-        expect(@controller.send(:after_sign_in_path_for, alice)).to eq(stream_path)
-      end
-    end
-
-    context "getting started true and user image present on user" do
-      before do
-        alice.update_attribute(:getting_started, true)
-        # Just set the image url...
-        alice.profile.image_url = "something not nil"
-        allow(@controller).to receive(:current_user).and_return(alice)
-      end
-
-      it "redirects to stream if the user has getting started set to true and has already added a photo" do
-        expect(@controller.send(:after_sign_in_path_for, alice)).to eq(stream_path)
-      end
-    end
-  end
-
-  describe "#after_sign_out_path_for" do
-    it "can handle a nil HTTP_USER_AGENT" do
-      @request.headers["HTTP_USER_AGENT"] = nil
-      expect(@controller.send(:after_sign_out_path_for, alice)).to eq(new_user_session_path)
+    it 'disallows blank api' do
+      PostAction.expects(:act).with(user, post, PostActionType.types[:bookmark]).never
+      put :bookmark, bookmarked: "true", post_id: post.id, api_key: "", api_username: user.username, format: :json
+      expect(response.code.to_i).to eq(403)
     end
   end
 end

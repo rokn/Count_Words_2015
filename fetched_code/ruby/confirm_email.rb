@@ -1,8 +1,11 @@
-module NotificationMailers
-  class ConfirmEmail < NotificationMailers::Base
-    def set_headers
-      @headers[:to] = name_and_address(@recipient.first_name, @recipient.unconfirmed_email)
-      @headers[:subject] = I18n.t('notifier.confirm_email.subject', :unconfirmed_email => @recipient.unconfirmed_email)
+module Workers
+  module Mail
+    class ConfirmEmail < Base
+      sidekiq_options queue: :mail
+      
+      def perform(user_id)
+        Notifier.confirm_email(user_id).deliver_now
+      end
     end
   end
 end

@@ -1,12 +1,22 @@
-require 'rails/generators/test_unit'
+require 'rails/generators/named_base'
 
-module TestUnit # :nodoc:
+module Rails # :nodoc:
   module Generators # :nodoc:
-    class JobGenerator < Base # :nodoc:
-      check_class_collision suffix: 'JobTest'
+    class JobGenerator < Rails::Generators::NamedBase # :nodoc:
+      desc 'This generator creates an active job file at app/jobs'
 
-      def create_test_file
-        template 'unit_test.rb.erb', File.join('test/jobs', class_path, "#{file_name}_job_test.rb")
+      class_option :queue, type: :string, default: 'default', desc: 'The queue name for the generated job'
+
+      check_class_collision suffix: 'Job'
+
+      hook_for :test_framework
+
+      def self.default_generator_root
+        File.dirname(__FILE__)
+      end
+
+      def create_job_file
+        template 'job.rb', File.join('app/jobs', class_path, "#{file_name}_job.rb")
       end
     end
   end

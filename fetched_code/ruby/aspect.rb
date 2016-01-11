@@ -2,118 +2,42 @@
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-class Stream::Aspect < Stream::Base
+class Aspect < ActiveRecord::Base
+  belongs_to :user
 
-  # @param user [User]
-  # @param inputted_aspect_ids [Array<Integer>] Ids of aspects for given stream
-  # @param aspect_ids [Array<Integer>] Aspects this stream is responsible for
-  # @opt max_time [Integer] Unix timestamp of stream's post ceiling
-  # @opt order [String] Order of posts (i.e. 'created_at', 'updated_at')
-  # @return [void]
-  def initialize(user, inputted_aspect_ids, opts={})
-    super(user, opts)
-    @inputted_aspect_ids = inputted_aspect_ids
+  has_many :aspect_memberships, :dependent => :destroy
+  has_many :contacts, :through => :aspect_memberships
+
+  has_many :aspect_visibilities, :dependent => :destroy
+  has_many :posts, :through => :aspect_visibilities, :source => :shareable, :source_type => 'Post'
+  has_many :photos, :through => :aspect_visibilities, :source => :shareable, :source_type => 'Photo'
+
+  validates :name, :presence => true, :length => { :maximum => 20 }
+
+  validates_uniqueness_of :name, :scope => :user_id, :case_sensitive => false
+
+  before_validation do
+    name.strip!
   end
 
-  # Filters aspects given the stream's aspect ids on initialization and the user.
-  # Will disclude aspects from inputted aspect ids if user is not associated with their
-  # target aspects.
-  #
-  # @return [ActiveRecord::Association<Aspect>] Filtered aspects given the stream's user
-  def aspects
-    @aspects ||= lambda do
-      a = user.aspects
-      a = a.where(:id => @inputted_aspect_ids) if @inputted_aspect_ids.any?
-      a
-    end.call
+  before_create do
+    self.order_id ||= Aspect.where(user_id: user_id).maximum(:order_id || 0).to_i + 1
   end
 
-  # Maps ids into an array from #aspects
-  #
-  # @return [Array<Integer>] Aspect ids
-  def aspect_ids
-    @aspect_ids ||= aspects.map { |a| a.id }
+  def to_s
+    name
   end
 
-  # @return [ActiveRecord::Association<Post>] AR association of posts
-  def posts
-    # NOTE(this should be something like Post.all_for_stream(@user, aspect_ids, {}) that calls visible_shareables
-    @posts ||= user.visible_shareables(Post, :all_aspects? => for_all_aspects?,
-                                             :by_members_of => aspect_ids,
-                                             :type => TYPES_OF_POST_IN_STREAM,
-                                             :order => "#{order} DESC",
-                                             :max_time => max_time
-                   )
-  end
-
-  # @return [ActiveRecord::Association<Person>] AR association of people within stream's given aspects
-  def people
-    @people ||= Person.unique_from_aspects(aspect_ids, user).includes(:profile)
-  end
-
-  # @return [String] URL
-  def link(opts={})
-    Rails.application.routes.url_helpers.aspects_path(opts)
-  end
-
-  # The first aspect in #aspects, given the stream is not for all aspects, or #aspects size is 1
-  # @note aspects.first is used for mobile. NOTE(this is a hack and should be fixed)
-  # @return [Aspect,Symbol]
-  def aspect
-    if !for_all_aspects? || aspects.size == 1
-      aspects.first
+  def << (shareable)
+    case shareable
+      when Post
+        self.posts << shareable
+      when Photo
+        self.photos << shareable
+      else
+        raise "Unknown shareable type '#{shareable.class.base_class.to_s}'"
     end
   end
 
-  # The title that will display at the top of the stream's
-  # publisher box.
-  #
-  # @return [String]
-  def title
-    if self.for_all_aspects?
-      I18n.t('streams.aspects.title')
-    else
-      self.aspects.to_sentence
-    end
-  end
-
-  # Determine whether or not the stream is displaying across
-  # all of the user's aspects.
-  #
-  # @return [Boolean]
-  def for_all_aspects?
-    @all_aspects ||= aspect_ids.length == user.aspects.size
-  end
-
-  # Provides a translated title for contacts box on the right pane.
-  #
-  # @return [String]
-  def contacts_title
-    if self.for_all_aspects? || self.aspect_ids.size > 1
-      I18n.t('_contacts')
-    else
-     "#{self.aspect.name} (#{self.people.size})"
-    end
-  end
-
-  # Provides a link to the user to the contacts page that corresponds with
-  # the stream's active aspects.
-  #
-  # @return [String] Link to contacts
-  def contacts_link
-    if for_all_aspects? || aspect_ids.size > 1
-      Rails.application.routes.url_helpers.contacts_path
-    else
-      Rails.application.routes.url_helpers.contacts_path(:a_id => aspect.id)
-    end
-  end
-
-  # This is perfomance optimization, as everyone in your aspect stream you have
-  # a contact.
-  #
-  # @param post [Post]
-  # @return [Boolean]
-  def can_comment?(post)
-    true
-  end
 end
+

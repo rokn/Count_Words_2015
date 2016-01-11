@@ -1,69 +1,71 @@
-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
-#   licensed under the Affero General Public License version 3 or later.  See
-#   the COPYRIGHT file.
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
+class Admin::TagsController < Admin::ApplicationController
+  before_action "set_current_tab('admin/tags')", only: [:index, :show]
 
-class TagsController < ApplicationController
-  skip_before_action :set_grammatical_gender
-  before_action :ensure_page, :only => :show
+  load_resource
 
-  helper_method :tag_followed?
-
-  layout proc { request.format == :mobile ? "application" : "with_header" }, only: :show
-
-  respond_to :html, :only => [:show]
-  respond_to :json, :only => [:index, :show]
-
+  # GET /admin/tags
+  # GET /admin/tags.xml                                                   HTML
+  #----------------------------------------------------------------------------
   def index
-    if params[:q] && params[:q].length > 1
-      params[:q].gsub!("#", "")
-      params[:limit] = !params[:limit].blank? ? params[:limit].to_i : 10
-      @tags = ActsAsTaggableOn::Tag.autocomplete(params[:q]).limit(params[:limit] - 1)
-      prep_tags_for_javascript
+    @tags = Tag.all
+    respond_with(@tags)
+  end
 
-      respond_to do |format|
-        format.json{ render(:json => @tags.to_json, :status => 200) }
-      end
-    else
-      respond_to do |format|
-        format.json{ render :nothing => true, :status => 422 }
-        format.html{ redirect_to tag_path('partytimeexcellent') }
-      end
+  # GET /admin/tags/new
+  # GET /admin/tags/new.xml                                               AJAX
+  #----------------------------------------------------------------------------
+  def new
+    respond_with(@tag)
+  end
+
+  # GET /admin/tags/1/edit                                                AJAX
+  #----------------------------------------------------------------------------
+  def edit
+    if params[:previous].to_s =~ /(\d+)\z/
+      @previous = Tag.find_by_id(Regexp.last_match[1]) || Regexp.last_match[1].to_i
     end
   end
 
-  def show
-    redirect_to(:action => :show, :name => downcased_tag_name) && return if tag_has_capitals?
+  # POST /admin/tags
+  # POST /admin/tags.xml                                                  AJAX
+  #----------------------------------------------------------------------------
+  def create
+    @tag.update_attributes(tag_params)
 
-    if user_signed_in?
-      gon.preloads[:tagFollowings] = tags
-    end
-    @stream = Stream::Tag.new(current_user, params[:name], :max_time => max_time, :page => params[:page])
-    respond_with do |format|
-      format.json { render :json => @stream.stream_posts.map { |p| LastThreeCommentsDecorator.new(PostPresenter.new(p, current_user)) }}
-    end
+    respond_with(@tag)
   end
 
-  private
+  # PUT /admin/tags/1
+  # PUT /admin/tags/1.xml                                                 AJAX
+  #----------------------------------------------------------------------------
+  def update
+    @tag.update_attributes(tag_params)
 
-  def tag_followed?
-    TagFollowing.user_is_following?(current_user, params[:name])
+    respond_with(@tag)
   end
 
-  def tag_has_capitals?
-    mb_tag = params[:name].mb_chars
-    mb_tag.downcase != mb_tag
+  # DELETE /admin/tags/1
+  # DELETE /admin/tags/1.xml                                              AJAX
+  #----------------------------------------------------------------------------
+  def destroy
+    @tag.destroy
+
+    respond_with(@tag)
   end
 
-  def downcased_tag_name
-    params[:name].mb_chars.downcase.to_s
+  # GET /admin/tags/1/confirm                                             AJAX
+  #----------------------------------------------------------------------------
+  def confirm
   end
 
-  def prep_tags_for_javascript
-    @tags = @tags.map {|tag|
-      { :name  => ("#" + tag.name) }
-    }
+  protected
 
-    @tags << { :name  => ('#' + params[:q]) }
-    @tags.uniq!
+  def tag_params
+    params[:tag].permit!
   end
 end

@@ -1,143 +1,148 @@
-class Admin::GroupsController < Admin::AdminController
+class GroupsController < ApplicationController
 
-  def index
-    groups = Group.order(:name)
-
-    if search = params[:search]
-      search = search.to_s
-      groups = groups.where("name ILIKE ?", "%#{search}%")
-    end
-
-    if params[:ignore_automatic].to_s == "true"
-      groups = groups.where(automatic: false)
-    end
-
-    render_serialized(groups, BasicGroupSerializer)
-  end
+  before_filter :ensure_logged_in, only: [:set_notifications]
 
   def show
-    render nothing: true
+    render_serialized(find_group(:id), BasicGroupSerializer)
   end
 
-  def bulk
-    render nothing: true
-  end
+  def counts
+    group = find_group(:group_id)
 
-  def bulk_perform
-    group = Group.find(params[:group_id].to_i)
-    if group.present?
-      users = (params[:users] || []).map {|u| u.downcase}
-      user_ids = User.where("username_lower in (:users) OR email IN (:users)", users: users).pluck(:id)
+    counts = {
+      posts: group.posts_for(guardian).count,
+      topics: group.posts_for(guardian).where(post_number: 1).count,
+      mentions: group.mentioned_posts_for(guardian).count,
+      members: group.users.count,
+    }
 
-      if user_ids.present?
-        Group.exec_sql("INSERT INTO group_users
-                                    (group_id, user_id, created_at, updated_at)
-                       SELECT #{group.id},
-                              u.id,
-                              CURRENT_TIMESTAMP,
-                              CURRENT_TIMESTAMP
-                       FROM users AS u
-                       WHERE u.id IN (#{user_ids.join(', ')})
-                         AND NOT EXISTS(SELECT 1 FROM group_users AS gu
-                                        WHERE gu.user_id = u.id AND
-                                              gu.group_id = #{group.id})")
-
-        if group.primary_group?
-          User.where(id: user_ids).update_all(primary_group_id: group.id)
-        end
-
-        if group.title.present?
-          User.where(id: user_ids).update_all(title: group.title)
-        end
-      end
+    if guardian.can_see_group_messages?(group)
+      counts[:messages] = group.messages_for(guardian).where(post_number: 1).count
     end
 
-    render json: success_json
+    render json: { counts: counts }
   end
 
-  def create
-    group = Group.new
-
-    group.name = (params[:name] || '').strip
-    save_group(group)
+  def posts
+    group = find_group(:group_id)
+    posts = group.posts_for(guardian, params[:before_post_id]).limit(20)
+    render_serialized posts.to_a, GroupPostSerializer
   end
 
-  def update
-    group = Group.find(params[:id])
-
-    # group rename is ignored for automatic groups
-    group.name = params[:name] if params[:name] && !group.automatic
-    save_group(group)
+  def topics
+    group = find_group(:group_id)
+    posts = group.posts_for(guardian, params[:before_post_id]).where(post_number: 1).limit(20)
+    render_serialized posts.to_a, GroupPostSerializer
   end
 
-  def save_group(group)
-    group.alias_level = params[:alias_level].to_i if params[:alias_level].present?
-    group.visible = params[:visible] == "true"
-    grant_trust_level = params[:grant_trust_level].to_i
-    group.grant_trust_level = (grant_trust_level > 0 && grant_trust_level <= 4) ? grant_trust_level : nil
+  def mentions
+    group = find_group(:group_id)
+    posts = group.mentioned_posts_for(guardian, params[:before_post_id]).limit(20)
+    render_serialized posts.to_a, GroupPostSerializer
+  end
 
-    group.automatic_membership_email_domains = params[:automatic_membership_email_domains] unless group.automatic
-    group.automatic_membership_retroactive = params[:automatic_membership_retroactive] == "true" unless group.automatic
-
-    group.primary_group = group.automatic ? false : params["primary_group"] == "true"
-
-    group.incoming_email = group.automatic ? nil : params[:incoming_email]
-
-    title = params[:title] if params[:title].present?
-    group.title = group.automatic ? nil : title
-
-    if group.save
-      render_serialized(group, BasicGroupSerializer)
+  def messages
+    group = find_group(:group_id)
+    posts = if guardian.can_see_group_messages?(group)
+      group.messages_for(guardian, params[:before_post_id]).where(post_number: 1).limit(20).to_a
     else
-      render_json_error group
+      []
     end
+    render_serialized posts, GroupPostSerializer
   end
 
-  def destroy
+  def members
+    group = find_group(:group_id)
+
+    limit = (params[:limit] || 50).to_i
+    offset = params[:offset].to_i
+
+    total = group.users.count
+    members = group.users.order('NOT group_users.owner').order(:username_lower).limit(limit).offset(offset)
+    owners = group.users.order(:username_lower).where('group_users.owner')
+
+    render json: {
+      members: serialize_data(members, GroupUserSerializer),
+      owners: serialize_data(owners, GroupUserSerializer),
+      meta: {
+        total: total,
+        limit: limit,
+        offset: offset
+      }
+    }
+  end
+
+  def add_members
     group = Group.find(params[:id])
+    guardian.ensure_can_edit!(group)
 
-    if group.automatic
-      can_not_modify_automatic
+    if params[:usernames].present?
+      users = User.where(username: params[:usernames].split(","))
+    elsif params[:user_ids].present?
+      users = User.find(params[:user_ids].split(","))
+    elsif params[:user_emails].present?
+      users = User.where(email: params[:user_emails].split(","))
     else
-      group.destroy
-      render json: success_json
+      raise Discourse::InvalidParameters.new('user_ids or usernames or user_emails must be present')
     end
-  end
-
-  def refresh_automatic_groups
-    Group.refresh_automatic_groups!
-    render json: success_json
-  end
-
-  def add_owners
-    group = Group.find(params.require(:id))
-    return can_not_modify_automatic if group.automatic
-
-    users = User.where(username: params[:usernames].split(","))
 
     users.each do |user|
       if !group.users.include?(user)
         group.add(user)
+      else
+        return render_json_error I18n.t('groups.errors.member_already_exist', username: user.username)
       end
-      group.group_users.where(user_id: user.id).update_all(owner: true)
     end
+
+    if group.save
+      render json: success_json
+    else
+      render_json_error(group)
+    end
+  end
+
+  def remove_member
+    group = Group.find(params[:id])
+    guardian.ensure_can_edit!(group)
+
+    if params[:user_id].present?
+      user = User.find(params[:user_id])
+    elsif params[:username].present?
+      user = User.find_by_username(params[:username])
+    else
+      raise Discourse::InvalidParameters.new('user_id or username must be present')
+    end
+
+    user.primary_group_id = nil if user.primary_group_id == group.id
+
+    group.users.delete(user.id)
+
+    if group.save && user.save
+      render json: success_json
+    else
+      render_json_error(group)
+    end
+
+  end
+
+  def set_notifications
+    group = find_group(:id)
+    notification_level = params.require(:notification_level)
+
+    GroupUser.where(group_id: group.id)
+             .where(user_id: current_user.id)
+             .update_all(notification_level: notification_level)
 
     render json: success_json
   end
 
-  def remove_owner
-    group = Group.find(params.require(:id))
-    return can_not_modify_automatic if group.automatic
+  private
 
-    user = User.find(params[:user_id].to_i)
-    group.group_users.where(user_id: user.id).update_all(owner: false)
-
-    render json: success_json
-  end
-
-  protected
-
-    def can_not_modify_automatic
-      render json: {errors: I18n.t('groups.errors.can_not_modify_automatic')}, status: 422
+    def find_group(param_name)
+      name = params.require(param_name)
+      group = Group.find_by("lower(name) = ?", name.downcase)
+      guardian.ensure_can_see!(group)
+      group
     end
+
 end

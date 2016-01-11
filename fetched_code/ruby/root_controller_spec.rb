@@ -1,35 +1,54 @@
 require 'spec_helper'
 
-describe Spree::Admin::RootController do
+describe RootController do
+  describe 'GET index' do
+    context 'with a user' do
+      let(:user) { create(:user) }
 
-  context "unauthorized request" do
+      before do
+        sign_in(user)
+        allow(subject).to receive(:current_user).and_return(user)
+      end
 
-    before :each do
-      allow(controller).to receive(:spree_current_user).and_return(nil)
-    end
+      context 'who has customized their dashboard setting for starred projects' do
+        before do
+          user.update_attribute(:dashboard, 'stars')
+        end
 
-    it "redirects to orders path by default" do
-      get :index
+        it 'redirects to their specified dashboard' do
+          get :index
+          expect(response).to redirect_to starred_dashboard_projects_path
+        end
+      end
 
-      expect(response).to redirect_to '/admin/orders'
-    end
-  end
+      context 'who has customized their dashboard setting for project activities' do
+        before do
+          user.update_attribute(:dashboard, 'project_activity')
+        end
 
-  context "authorized request" do
-    stub_authorization!
+        it 'redirects to the activity list' do
+          get :index
+          expect(response).to redirect_to activity_dashboard_path
+        end
+      end
 
-    it "redirects to orders path by default" do
-      get :index
+      context 'who has customized their dashboard setting for starred project activities' do
+        before do
+          user.update_attribute(:dashboard, 'starred_project_activity')
+        end
 
-      expect(response).to redirect_to '/admin/orders'
-    end
+        it 'redirects to the activity list' do
+          get :index
+          expect(response).to redirect_to activity_dashboard_path(filter: 'starred')
+        end
+      end
 
-    it "redirects to wherever admin_root_redirects_path tells it to" do
-      expect(controller).to receive(:admin_root_redirect_path).and_return('/grooot')
-
-      get :index
-
-      expect(response).to redirect_to '/grooot'
+      context 'who uses the default dashboard setting' do
+        it 'renders the default dashboard' do
+          get :index
+          expect(response).to render_template 'dashboard/projects/index'
+        end
+      end
     end
   end
 end

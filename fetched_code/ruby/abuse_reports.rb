@@ -1,21 +1,15 @@
-# == Schema Information
-#
-# Table name: abuse_reports
-#
-#  id          :integer          not null, primary key
-#  reporter_id :integer
-#  user_id     :integer
-#  message     :text
-#  created_at  :datetime
-#  updated_at  :datetime
-#
+class Spinach::Features::AdminAbuseReports < Spinach::FeatureSteps
+  include SharedAuthentication
+  include SharedPaths
+  include SharedAdmin
 
-# Read about factories at https://github.com/thoughtbot/factory_girl
+  step 'I should see list of abuse reports' do
+    page.should have_content("Abuse Reports")
+    page.should have_content AbuseReport.first.message
+    page.should have_link("Remove user")
+  end
 
-FactoryGirl.define do
-  factory :abuse_report do
-    reporter factory: :user
-    user
-    message 'User sends spam'
+  step 'abuse reports exist' do
+    create(:abuse_report)
   end
 end
