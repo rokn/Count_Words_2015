@@ -66,7 +66,7 @@ def svg_gen(filepath)
                     height = (max - min) * v
 
                     f.write(make_square(c * (width + offset), offset + maxWidth - height, width, height))
-                    f.write('<text x="' + (c * (width + offset) + 28).to_s + '" y="' + (offset + maxWidth - 10).to_s + '">' + count2.to_s + '</text>')
+                    f.write('<text x="' + (c * (width + offset) + 20).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + count2.to_s + '</text>')
                     f.write('<text x="' + (c * (width + offset) + 35).to_s + '" y="' + (offset + maxWidth + 10).to_s + '" style="writing-mode: tb;">' + word2 + '</text>')
                     c = c + 1
                 end
