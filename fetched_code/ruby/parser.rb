@@ -1,67 +1,52 @@
-module HTTP
-  class Response
-    class Parser
-      attr_reader :headers
+# frozen_string_literal: false
+module Psych
+  ###
+  # YAML event parser class.  This class parses a YAML document and calls
+  # events on the handler that is passed to the constructor.  The events can
+  # be used for things such as constructing a YAML AST or deserializing YAML
+  # documents.  It can even be fed back to Psych::Emitter to emit the same
+  # document that was parsed.
+  #
+  # See Psych::Handler for documentation on the events that Psych::Parser emits.
+  #
+  # Here is an example that prints out ever scalar found in a YAML document:
+  #
+  #   # Handler for detecting scalar values
+  #   class ScalarHandler < Psych::Handler
+  #     def scalar value, anchor, tag, plain, quoted, style
+  #       puts value
+  #     end
+  #   end
+  #
+  #   parser = Psych::Parser.new(ScalarHandler.new)
+  #   parser.parse(yaml_document)
+  #
+  # Here is an example that feeds the parser back in to Psych::Emitter.  The
+  # YAML document is read from STDIN and written back out to STDERR:
+  #
+  #   parser = Psych::Parser.new(Psych::Emitter.new($stderr))
+  #   parser.parse($stdin)
+  #
+  # Psych uses Psych::Parser in combination with Psych::TreeBuilder to
+  # construct an AST of the parsed YAML document.
 
-      def initialize
-        @parser = HTTP::Parser.new(self)
-        reset
-      end
+  class Parser
+    class Mark < Struct.new(:index, :line, :column)
+    end
 
-      def add(data)
-        @parser << data
-      end
-      alias_method :<<, :add
+    # The handler on which events will be called
+    attr_accessor :handler
 
-      def headers?
-        !!@headers
-      end
+    # Set the encoding for this parser to +encoding+
+    attr_writer :external_encoding
 
-      def http_version
-        @parser.http_version.join(".")
-      end
+    ###
+    # Creates a new Psych::Parser instance with +handler+.  YAML events will
+    # be called on +handler+.  See Psych::Parser for more details.
 
-      def status_code
-        @parser.status_code
-      end
-
-      #
-      # HTTP::Parser callbacks
-      #
-
-      def on_headers_complete(headers)
-        @headers = headers
-      end
-
-      def on_body(chunk)
-        if @chunk
-          @chunk << chunk
-        else
-          @chunk = chunk
-        end
-      end
-
-      def chunk
-        chunk  = @chunk
-        @chunk = nil
-        chunk
-      end
-
-      def on_message_complete
-        @finished = true
-      end
-
-      def reset
-        @parser.reset!
-
-        @finished = false
-        @headers  = nil
-        @chunk    = nil
-      end
-
-      def finished?
-        @finished
-      end
+    def initialize handler = Handler.new
+      @handler = handler
+      @external_encoding = ANY
     end
   end
 end

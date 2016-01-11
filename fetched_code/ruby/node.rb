@@ -1,138 +1,56 @@
-require 'action_dispatch/journey/visitors'
+# frozen_string_literal: false
+require 'stringio'
+require 'psych/class_loader'
+require 'psych/scalar_scanner'
 
-module ActionDispatch
-  module Journey # :nodoc:
-    module Nodes # :nodoc:
-      class Node # :nodoc:
-        include Enumerable
+module Psych
+  module Nodes
+    ###
+    # The base class for any Node in a YAML parse tree.  This class should
+    # never be instantiated.
+    class Node
+      include Enumerable
 
-        attr_accessor :left, :memo
+      # The children of this node
+      attr_reader :children
 
-        def initialize(left)
-          @left = left
-          @memo = nil
-        end
+      # An associated tag
+      attr_reader :tag
 
-        def each(&block)
-          Visitors::Each::INSTANCE.accept(self, block)
-        end
-
-        def to_s
-          Visitors::String::INSTANCE.accept(self, '')
-        end
-
-        def to_dot
-          Visitors::Dot::INSTANCE.accept(self)
-        end
-
-        def to_sym
-          name.to_sym
-        end
-
-        def name
-          left.tr '*:'.freeze, ''.freeze
-        end
-
-        def type
-          raise NotImplementedError
-        end
-
-        def symbol?; false; end
-        def literal?; false; end
-        def terminal?; false; end
-        def star?; false; end
-        def cat?; false; end
-        def group?; false; end
+      # Create a new Psych::Nodes::Node
+      def initialize
+        @children = []
       end
 
-      class Terminal < Node # :nodoc:
-        alias :symbol :left
-        def terminal?; true; end
+      ###
+      # Iterate over each node in the tree. Yields each node to +block+ depth
+      # first.
+      def each &block
+        return enum_for :each unless block_given?
+        Visitors::DepthFirst.new(block).accept self
       end
 
-      class Literal < Terminal # :nodoc:
-        def literal?; true; end
-        def type; :LITERAL; end
+      ###
+      # Convert this node to Ruby.
+      #
+      # See also Psych::Visitors::ToRuby
+      def to_ruby
+        Visitors::ToRuby.create.accept(self)
       end
+      alias :transform :to_ruby
 
-      class Dummy < Literal # :nodoc:
-        def initialize(x = Object.new)
-          super
-        end
+      ###
+      # Convert this node to YAML.
+      #
+      # See also Psych::Visitors::Emitter
+      def yaml io = nil, options = {}
+        real_io = io || StringIO.new(''.encode('utf-8'))
 
-        def literal?; false; end
+        Visitors::Emitter.new(real_io, options).accept self
+        return real_io.string unless io
+        io
       end
-
-      %w{ Symbol Slash Dot }.each do |t|
-        class_eval <<-eoruby, __FILE__, __LINE__ + 1
-          class #{t} < Terminal;
-            def type; :#{t.upcase}; end
-          end
-        eoruby
-      end
-
-      class Symbol < Terminal # :nodoc:
-        attr_accessor :regexp
-        alias :symbol :regexp
-        attr_reader :name
-
-        DEFAULT_EXP = /[^\.\/\?]+/
-        def initialize(left)
-          super
-          @regexp = DEFAULT_EXP
-          @name = left.tr '*:'.freeze, ''.freeze
-        end
-
-        def default_regexp?
-          regexp == DEFAULT_EXP
-        end
-
-        def symbol?; true; end
-      end
-
-      class Unary < Node # :nodoc:
-        def children; [left] end
-      end
-
-      class Group < Unary # :nodoc:
-        def type; :GROUP; end
-        def group?; true; end
-      end
-
-      class Star < Unary # :nodoc:
-        def star?; true; end
-        def type; :STAR; end
-
-        def name
-          left.name.tr '*:', ''
-        end
-      end
-
-      class Binary < Node # :nodoc:
-        attr_accessor :right
-
-        def initialize(left, right)
-          super(left)
-          @right = right
-        end
-
-        def children; [left, right] end
-      end
-
-      class Cat < Binary # :nodoc:
-        def cat?; true; end
-        def type; :CAT; end
-      end
-
-      class Or < Node # :nodoc:
-        attr_reader :children
-
-        def initialize(children)
-          @children = children
-        end
-
-        def type; :OR; end
-      end
+      alias :to_yaml :yaml
     end
   end
 end

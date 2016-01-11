@@ -1,118 +1,132 @@
-module Jekyll
-  module Commands
-    class Doctor < Command
-      class << self
+# frozen_string_literal: false
+require 'rubygems'
+require 'rubygems/user_interaction'
 
-        def init_with_program(prog)
-          prog.command(:doctor) do |c|
-            c.syntax 'doctor'
-            c.description 'Search site and print specific deprecation warnings'
-            c.alias(:hyde)
+##
+# Cleans up after a partially-failed uninstall or for an invalid
+# Gem::Specification.
+#
+# If a specification was removed by hand this will remove any remaining files.
+#
+# If a corrupt specification was installed this will clean up warnings by
+# removing the bogus specification.
 
-            c.option '--config CONFIG_FILE[,CONFIG_FILE2,...]', Array, 'Custom configuration file'
+class Gem::Doctor
 
-            c.action do |args, options|
-              Jekyll::Commands::Doctor.process(options)
-            end
-          end
-        end
+  include Gem::UserInteraction
 
-        def process(options)
-          site = Jekyll::Site.new(configuration_from_options(options))
-          site.read
+  ##
+  # Maps a gem subdirectory to the files that are expected to exist in the
+  # subdirectory.
 
-          if healthy?(site)
-            Jekyll.logger.info "Your test results", "are in. Everything looks fine."
-          else
-            abort
-          end
-        end
+  REPOSITORY_EXTENSION_MAP = [ # :nodoc:
+    ['specifications', '.gemspec'],
+    ['build_info',     '.info'],
+    ['cache',          '.gem'],
+    ['doc',            ''],
+    ['extensions',     ''],
+    ['gems',           ''],
+  ]
 
-        def healthy?(site)
-          [
-            fsnotify_buggy?(site),
-            !deprecated_relative_permalinks(site),
-            !conflicting_urls(site),
-            !urls_only_differ_by_case(site)
-          ].all?
-        end
+  missing =
+    Gem::REPOSITORY_SUBDIRECTORIES.sort -
+      REPOSITORY_EXTENSION_MAP.map { |(k,_)| k }.sort
 
-        def deprecated_relative_permalinks(site)
-          if site.config['relative_permalinks']
-            Jekyll::Deprecator.deprecation_message "Your site still uses relative" +
-                                " permalinks, which was removed in" +
-                                " Jekyll v3.0.0."
-            return true
-          end
-        end
+  raise "Update REPOSITORY_EXTENSION_MAP, missing: #{missing.join ', '}" unless
+    missing.empty?
 
-        def conflicting_urls(site)
-          conflicting_urls = false
-          urls = {}
-          urls = collect_urls(urls, site.pages, site.dest)
-          urls = collect_urls(urls, site.posts.docs, site.dest)
-          urls.each do |url, paths|
-            if paths.size > 1
-              conflicting_urls = true
-              Jekyll.logger.warn "Conflict:", "The URL '#{url}' is the destination" +
-                " for the following pages: #{paths.join(", ")}"
-            end
-          end
-          conflicting_urls
-        end
+  ##
+  # Creates a new Gem::Doctor that will clean up +gem_repository+.  Only one
+  # gem repository may be cleaned at a time.
+  #
+  # If +dry_run+ is true no files or directories will be removed.
 
-        def fsnotify_buggy?(site)
-          return true if !Utils::Platforms.osx?
-          if Dir.pwd != `pwd`.strip
-            Jekyll.logger.error "  " + <<-STR.strip.gsub(/\n\s+/, "\n  ")
-              We have detected that there might be trouble using fsevent on your
-              operating system, you can read https://github.com/thibaudgg/rb-fsevent/wiki/no-fsevents-fired-(OSX-bug)
-              for possible work arounds or you can work around it immediately
-              with `--force-polling`.
-            STR
+  def initialize gem_repository, dry_run = false
+    @gem_repository = gem_repository
+    @dry_run        = dry_run
 
-            false
-          end
+    @installed_specs = nil
+  end
 
-          true
-        end
+  ##
+  # Specs installed in this gem repository
 
-        def urls_only_differ_by_case(site)
-          urls_only_differ_by_case = false
-          urls = case_insensitive_urls(site.pages + site.docs_to_write, site.dest)
-          urls.each do |case_insensitive_url, real_urls|
-            if real_urls.uniq.size > 1
-              urls_only_differ_by_case = true
-              Jekyll.logger.warn "Warning:", "The following URLs only differ" +
-                " by case. On a case-insensitive file system one of the URLs" +
-                " will be overwritten by the other: #{real_urls.join(", ")}"
-            end
-          end
-          urls_only_differ_by_case
-        end
+  def installed_specs # :nodoc:
+    @installed_specs ||= Gem::Specification.map { |s| s.full_name }
+  end
 
-        private
-        def collect_urls(urls, things, destination)
-          things.each do |thing|
-            dest = thing.destination(destination)
-            if urls[dest]
-              urls[dest] << thing.path
-            else
-              urls[dest] = [thing.path]
-            end
-          end
-          urls
-        end
+  ##
+  # Are we doctoring a gem repository?
 
-        def case_insensitive_urls(things, destination)
-          things.inject(Hash.new) do |memo, thing|
-            dest = thing.destination(destination)
-            (memo[dest.downcase] ||= []) << dest
-            memo
-          end
-        end
-      end
+  def gem_repository?
+    not installed_specs.empty?
+  end
 
+  ##
+  # Cleans up uninstalled files and invalid gem specifications
+
+  def doctor
+    @orig_home = Gem.dir
+    @orig_path = Gem.path
+
+    say "Checking #{@gem_repository}"
+
+    Gem.use_paths @gem_repository.to_s
+
+    unless gem_repository? then
+      say 'This directory does not appear to be a RubyGems repository, ' +
+          'skipping'
+      say
+      return
+    end
+
+    doctor_children
+
+    say
+  ensure
+    Gem.use_paths @orig_home, *@orig_path
+  end
+
+  ##
+  # Cleans up children of this gem repository
+
+  def doctor_children # :nodoc:
+    REPOSITORY_EXTENSION_MAP.each do |sub_directory, extension|
+      doctor_child sub_directory, extension
     end
   end
+
+  ##
+  # Removes files in +sub_directory+ with +extension+
+
+  def doctor_child sub_directory, extension # :nodoc:
+    directory = File.join(@gem_repository, sub_directory)
+
+    Dir.entries(directory).sort.each do |ent|
+      next if ent == "." || ent == ".."
+
+      child = File.join(directory, ent)
+      next unless File.exist?(child)
+
+      basename = File.basename(child, extension)
+      next if installed_specs.include? basename
+      next if /^rubygems-\d/ =~ basename
+      next if 'specifications' == sub_directory and 'default' == basename
+
+      type = File.directory?(child) ? 'directory' : 'file'
+
+      action = if @dry_run then
+                 'Extra'
+               else
+                 FileUtils.rm_r(child)
+                 'Removed'
+               end
+
+      say "#{action} #{type} #{sub_directory}/#{File.basename(child)}"
+    end
+  rescue Errno::ENOENT
+    # ignore
+  end
+
 end
+

@@ -1,198 +1,248 @@
-require "forwardable"
-require "base64"
-require "time"
+# frozen_string_literal: false
+require 'net/http'
+require 'thread'
+require 'time'
+require 'rubygems/user_interaction'
 
-require "http/errors"
-require "http/headers"
-require "http/request/writer"
-require "http/version"
-require "http/uri"
+class Gem::Request
 
-module HTTP
-  class Request
-    extend Forwardable
+  include Gem::UserInteraction
 
-    include HTTP::Headers::Mixin
+  ###
+  # Legacy.  This is used in tests.
+  def self.create_with_proxy uri, request_class, last_modified, proxy # :nodoc:
+    cert_files = get_cert_files
+    proxy ||= get_proxy_from_env(uri.scheme)
+    pool       = ConnectionPools.new proxy_uri(proxy), cert_files
 
-    # The method given was not understood
-    class UnsupportedMethodError < RequestError; end
+    new(uri, request_class, last_modified, pool.pool_for(uri))
+  end
 
-    # The scheme of given URI was not understood
-    class UnsupportedSchemeError < RequestError; end
-
-    # Default User-Agent header value
-    USER_AGENT = "http.rb/#{HTTP::VERSION}".freeze
-
-    # RFC 2616: Hypertext Transfer Protocol -- HTTP/1.1
-    METHODS = [:options, :get, :head, :post, :put, :delete, :trace, :connect]
-
-    # RFC 2518: HTTP Extensions for Distributed Authoring -- WEBDAV
-    METHODS.concat [:propfind, :proppatch, :mkcol, :copy, :move, :lock, :unlock]
-
-    # RFC 3648: WebDAV Ordered Collections Protocol
-    METHODS.concat [:orderpatch]
-
-    # RFC 3744: WebDAV Access Control Protocol
-    METHODS.concat [:acl]
-
-    # draft-dusseault-http-patch: PATCH Method for HTTP
-    METHODS.concat [:patch]
-
-    # draft-reschke-webdav-search: WebDAV Search
-    METHODS.concat [:search]
-
-    # Allowed schemes
-    SCHEMES = [:http, :https, :ws, :wss]
-
-    # Default ports of supported schemes
-    PORTS = {
-      :http   => 80,
-      :https  => 443,
-      :ws     => 80,
-      :wss    => 443
-    }
-
-    # Method is given as a lowercase symbol e.g. :get, :post
-    attr_reader :verb
-
-    # Scheme is normalized to be a lowercase symbol e.g. :http, :https
-    attr_reader :scheme
-
-    # "Request URI" as per RFC 2616
-    # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
-    attr_reader :uri
-    attr_reader :proxy, :body, :version
-
-    # @option opts [String] :version
-    # @option opts [#to_s] :verb HTTP request method
-    # @option opts [HTTP::URI, #to_s] :uri
-    # @option opts [Hash] :headers
-    # @option opts [Hash] :proxy
-    # @option opts [String] :body
-    def initialize(opts)
-      @verb   = opts.fetch(:verb).to_s.downcase.to_sym
-      @uri    = normalize_uri(opts.fetch :uri)
-      @scheme = @uri.scheme.to_s.downcase.to_sym if @uri.scheme
-
-      fail(UnsupportedMethodError, "unknown method: #{verb}") unless METHODS.include?(@verb)
-      fail(UnsupportedSchemeError, "unknown scheme: #{scheme}") unless SCHEMES.include?(@scheme)
-
-      @proxy   = opts[:proxy] || {}
-      @body    = opts[:body]
-      @version = opts[:version] || "1.1"
-      @headers = HTTP::Headers.coerce(opts[:headers] || {})
-
-      @headers[Headers::HOST]        ||= default_host_header_value
-      @headers[Headers::USER_AGENT]  ||= USER_AGENT
-    end
-
-    # Returns new Request with updated uri
-    def redirect(uri, verb = @verb)
-      req = self.class.new(
-        :verb    => verb,
-        :uri     => @uri.join(uri),
-        :headers => headers,
-        :proxy   => proxy,
-        :body    => body,
-        :version => version
-      )
-
-      req[Headers::HOST] = req.uri.host
-      req
-    end
-
-    # Stream the request to a socket
-    def stream(socket)
-      include_proxy_authorization_header if using_authenticated_proxy? && !@uri.https?
-      Request::Writer.new(socket, body, headers, headline).stream
-    end
-
-    # Is this request using a proxy?
-    def using_proxy?
-      proxy && proxy.keys.size >= 2
-    end
-
-    # Is this request using an authenticated proxy?
-    def using_authenticated_proxy?
-      proxy && proxy.keys.size == 4
-    end
-
-    # Compute and add the Proxy-Authorization header
-    def include_proxy_authorization_header
-      headers[Headers::PROXY_AUTHORIZATION] = proxy_authorization_header
-    end
-
-    def proxy_authorization_header
-      digest = Base64.strict_encode64("#{proxy[:proxy_username]}:#{proxy[:proxy_password]}")
-      "Basic #{digest}"
-    end
-
-    # Setup tunnel through proxy for SSL request
-    def connect_using_proxy(socket)
-      Request::Writer.new(socket, nil, proxy_connect_headers, proxy_connect_header).connect_through_proxy
-    end
-
-    # Compute HTTP request header for direct or proxy request
-    def headline
-      request_uri = using_proxy? ? uri : uri.omit(:scheme, :authority)
-      "#{verb.to_s.upcase} #{request_uri.omit :fragment} HTTP/#{version}"
-    end
-
-    # Compute HTTP request header SSL proxy connection
-    def proxy_connect_header
-      "CONNECT #{host}:#{port} HTTP/#{version}"
-    end
-
-    # Headers to send with proxy connect request
-    def proxy_connect_headers
-      connect_headers = HTTP::Headers.coerce(
-        Headers::HOST        => headers[Headers::HOST],
-        Headers::USER_AGENT  => headers[Headers::USER_AGENT]
-      )
-
-      connect_headers[Headers::PROXY_AUTHORIZATION] = proxy_authorization_header if using_authenticated_proxy?
-
-      connect_headers
-    end
-
-    # Host for tcp socket
-    def socket_host
-      using_proxy? ? proxy[:proxy_address] : host
-    end
-
-    # Port for tcp socket
-    def socket_port
-      using_proxy? ? proxy[:proxy_port] : port
-    end
-
-    private
-
-    # @!attribute [r] host
-    #   @return [String]
-    def_delegator :@uri, :host
-
-    # @!attribute [r] port
-    #   @return [Fixnum]
-    def port
-      @uri.port || @uri.default_port
-    end
-
-    # @return [String] Default host (with port if needed) header value.
-    def default_host_header_value
-      PORTS[@scheme] != port ? "#{host}:#{port}" : host
-    end
-
-    # @return [HTTP::URI] URI with all componentes but query being normalized.
-    def normalize_uri(uri)
-      uri = HTTP::URI.parse uri
-
-      HTTP::URI.new(
-        :scheme     => uri.normalized_scheme,
-        :authority  => uri.normalized_authority,
-        :path       => uri.normalized_path,
-        :query      => uri.query,
-        :fragment   => uri.normalized_fragment
-      )
+  def self.proxy_uri proxy # :nodoc:
+    case proxy
+    when :no_proxy then nil
+    when URI::HTTP then proxy
+    else URI.parse(proxy)
     end
   end
+
+  def initialize(uri, request_class, last_modified, pool)
+    @uri = uri
+    @request_class = request_class
+    @last_modified = last_modified
+    @requests = Hash.new 0
+    @user_agent = user_agent
+
+    @connection_pool = pool
+  end
+
+  def proxy_uri; @connection_pool.proxy_uri; end
+  def cert_files; @connection_pool.cert_files; end
+
+  def self.get_cert_files
+    pattern = File.expand_path("./ssl_certs/*.pem", File.dirname(__FILE__))
+    Dir.glob(pattern)
+  end
+
+  def self.configure_connection_for_https(connection, cert_files)
+    require 'net/https'
+    connection.use_ssl = true
+    connection.verify_mode =
+      Gem.configuration.ssl_verify_mode || OpenSSL::SSL::VERIFY_PEER
+    store = OpenSSL::X509::Store.new
+
+    if Gem.configuration.ssl_client_cert then
+      pem = File.read Gem.configuration.ssl_client_cert
+      connection.cert = OpenSSL::X509::Certificate.new pem
+      connection.key = OpenSSL::PKey::RSA.new pem
+    end
+
+    store.set_default_paths
+    cert_files.each do |ssl_cert_file|
+      store.add_file ssl_cert_file
+    end
+    if Gem.configuration.ssl_ca_cert
+      if File.directory? Gem.configuration.ssl_ca_cert
+        store.add_path Gem.configuration.ssl_ca_cert
+      else
+        store.add_file Gem.configuration.ssl_ca_cert
+      end
+    end
+    connection.cert_store = store
+    connection
+  rescue LoadError => e
+    raise unless (e.respond_to?(:path) && e.path == 'openssl') ||
+                 e.message =~ / -- openssl$/
+
+    raise Gem::Exception.new(
+            'Unable to require openssl, install OpenSSL and rebuild ruby (preferred) or use non-HTTPS sources')
+  end
+
+  ##
+  # Creates or an HTTP connection based on +uri+, or retrieves an existing
+  # connection, using a proxy if needed.
+
+  def connection_for(uri)
+    @connection_pool.checkout
+  rescue defined?(OpenSSL::SSL) ? OpenSSL::SSL::SSLError : Errno::EHOSTDOWN,
+         Errno::EHOSTDOWN => e
+    raise Gem::RemoteFetcher::FetchError.new(e.message, uri)
+  end
+
+  def fetch
+    request = @request_class.new @uri.request_uri
+
+    unless @uri.nil? || @uri.user.nil? || @uri.user.empty? then
+      request.basic_auth Gem::UriFormatter.new(@uri.user).unescape,
+                         Gem::UriFormatter.new(@uri.password).unescape
+    end
+
+    request.add_field 'User-Agent', @user_agent
+    request.add_field 'Connection', 'keep-alive'
+    request.add_field 'Keep-Alive', '30'
+
+    if @last_modified then
+      request.add_field 'If-Modified-Since', @last_modified.httpdate
+    end
+
+    yield request if block_given?
+
+    perform_request request
+  end
+
+  ##
+  # Returns a proxy URI for the given +scheme+ if one is set in the
+  # environment variables.
+
+  def self.get_proxy_from_env scheme = 'http'
+    _scheme = scheme.downcase
+    _SCHEME = scheme.upcase
+    env_proxy = ENV["#{_scheme}_proxy"] || ENV["#{_SCHEME}_PROXY"]
+
+    no_env_proxy = env_proxy.nil? || env_proxy.empty?
+
+    return get_proxy_from_env 'http' if no_env_proxy and _scheme != 'http'
+    return :no_proxy                 if no_env_proxy
+
+    uri = URI(Gem::UriFormatter.new(env_proxy).normalize)
+
+    if uri and uri.user.nil? and uri.password.nil? then
+      user     = ENV["#{_scheme}_proxy_user"] || ENV["#{_SCHEME}_PROXY_USER"]
+      password = ENV["#{_scheme}_proxy_pass"] || ENV["#{_SCHEME}_PROXY_PASS"]
+
+      uri.user     = Gem::UriFormatter.new(user).escape
+      uri.password = Gem::UriFormatter.new(password).escape
+    end
+
+    uri
+  end
+
+  def perform_request request # :nodoc:
+    connection = connection_for @uri
+
+    retried = false
+    bad_response = false
+
+    begin
+      @requests[connection.object_id] += 1
+
+      verbose "#{request.method} #{@uri}"
+
+      file_name = File.basename(@uri.path)
+      # perform download progress reporter only for gems
+      if request.response_body_permitted? && file_name =~ /\.gem$/
+        reporter = ui.download_reporter
+        response = connection.request(request) do |incomplete_response|
+          if Net::HTTPOK === incomplete_response
+            reporter.fetch(file_name, incomplete_response.content_length)
+            downloaded = 0
+            data = ''
+
+            incomplete_response.read_body do |segment|
+              data << segment
+              downloaded += segment.length
+              reporter.update(downloaded)
+            end
+            reporter.done
+            if incomplete_response.respond_to? :body=
+              incomplete_response.body = data
+            else
+              incomplete_response.instance_variable_set(:@body, data)
+            end
+          end
+        end
+      else
+        response = connection.request request
+      end
+
+      verbose "#{response.code} #{response.message}"
+
+    rescue Net::HTTPBadResponse
+      verbose "bad response"
+
+      reset connection
+
+      raise Gem::RemoteFetcher::FetchError.new('too many bad responses', @uri) if bad_response
+
+      bad_response = true
+      retry
+    rescue Net::HTTPFatalError
+      verbose "fatal error"
+
+      raise Gem::RemoteFetcher::FetchError.new('fatal error', @uri)
+    # HACK work around EOFError bug in Net::HTTP
+    # NOTE Errno::ECONNABORTED raised a lot on Windows, and make impossible
+    # to install gems.
+    rescue EOFError, Timeout::Error,
+           Errno::ECONNABORTED, Errno::ECONNRESET, Errno::EPIPE
+
+      requests = @requests[connection.object_id]
+      verbose "connection reset after #{requests} requests, retrying"
+
+      raise Gem::RemoteFetcher::FetchError.new('too many connection resets', @uri) if retried
+
+      reset connection
+
+      retried = true
+      retry
+    end
+
+    response
+  ensure
+    @connection_pool.checkin connection
+  end
+
+  ##
+  # Resets HTTP connection +connection+.
+
+  def reset(connection)
+    @requests.delete connection.object_id
+
+    connection.finish
+    connection.start
+  end
+
+  def user_agent
+    ua = "RubyGems/#{Gem::VERSION} #{Gem::Platform.local}"
+
+    ruby_version = RUBY_VERSION
+    ruby_version += 'dev' if RUBY_PATCHLEVEL == -1
+
+    ua << " Ruby/#{ruby_version} (#{RUBY_RELEASE_DATE}"
+    if RUBY_PATCHLEVEL >= 0 then
+      ua << " patchlevel #{RUBY_PATCHLEVEL}"
+    elsif defined?(RUBY_REVISION) then
+      ua << " revision #{RUBY_REVISION}"
+    end
+    ua << ")"
+
+    ua << " #{RUBY_ENGINE}" if defined?(RUBY_ENGINE) and RUBY_ENGINE != 'ruby'
+
+    ua
+  end
+
 end
+
+require 'rubygems/request/http_pool'
+require 'rubygems/request/https_pool'
+require 'rubygems/request/connection_pools'

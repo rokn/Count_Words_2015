@@ -1,9 +1,9 @@
-module Spree
-  module Core
-    module Importer
-    end
-  end
+# frozen_string_literal: false
+require 'fiddle/import'
+
+module Win32
 end
 
-require 'spree/core/importer/order'
-require 'spree/core/importer/product'
+Win32.module_eval do
+  Importer = Fiddle::Importer
+end
