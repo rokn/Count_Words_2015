@@ -1,6 +1,10 @@
 require 'json'
 require_relative 'word_counter.rb'
 
+def erase_xml_specific_characters text
+	text.gsub(/[\<\>\&]/, ' ')
+end
+
 def get_file_extension filename
 	split_fn = filename.split('.');
 	split_fn.size == 1 ? '' : split_fn.last
@@ -49,9 +53,12 @@ else
 				file = File.open(filename,"r")
 				text = String.new
 				file.each { |line| text << line }
-				total_lines += text.lines.count
+				lines = text.lines.count
+				text = erase_xml_specific_characters text
+
 				marks += WordCounter.count_words text, type, counted_words
 				parsed_files += 1
+				total_lines += lines
 			rescue ArgumentError
 				puts "Error"
 			end
@@ -69,6 +76,6 @@ else
 	end
 
 	puts "#{parsed_files}/#{total_files} parsed successfully"
-	puts "#{total_lines} in total"
+	puts "#{total_lines} lines in total"
 
 end
